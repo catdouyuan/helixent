@@ -399,6 +399,24 @@ public interface Tool<I> {
 >
 > 下文每章的“章节完成验证”即为该章的最小验收门槛，执行方式统一遵循以上五条。
 
+> **强制约束（每章先出改动文档）：** 每开始实现一章，必须**先**在 `helixent_java/distribution/change-notes/` 下生成该章的技术文档，再写实现代码。规则如下：
+>
+> 1. 文件命名：`chapter-NN-<topic-slug>.md`（如 `chapter-03-model-and-modelprovider.md`），`NN` 为两位章号。
+> 2. 文档中引用代码/文件时，必须写成**可点击的 Markdown 相对链接** `[显示名](相对路径)`，而非仅用反引号包裹的纯文本路径。规则：
+>    - 相对路径基准为该文档所在目录 `helixent_java/distribution/change-notes/`；指向工程内文件通常以 `../../` 开头（如 `[Model.java](../../helixent-foundation/src/main/java/.../model/Model.java)`）。
+>    - 参考项目内可正常跳转的范例写法：`../helixent/docs/tutorial/00-roadmap.md` 中的相对链接。
+>    - 文件清单表格里的每个文件名都应是链接；正文散文中首次出现的关键文件也尽量链接化。
+>    - 经验教训：纯反引号文本（如 `` `Model.java` ``）在 IDE/预览里不可点击；链接显示名不要写成带省略号的截断路径（如 `.../Model.java`），否则部分渲染器不会生成可点击热区。
+> 3. 文档必须包含以下小节：
+>    - 本章目标回顾；
+>    - 主要改动点（新增/修改的文件清单 + 职责，文件名以相对链接给出）；
+>    - 与原 TypeScript 的不同点、为什么这样写、以及每处改动的优点与缺点/风险；
+>    - 测试与桩的设计说明；
+>    - 验收结果（对应本章“章节完成验证”的命令与结论）；
+>    - 遗留衔接点（供后续章节注意）。
+> 4. 实现完成后必须回填文档：核对文中引用的相对链接**全部真实存在且可点击跳转**（可用脚本按 `../../` 解析逐一验证目标文件存在），并补齐验收结果。
+> 5. 该文档是本章交付物的一部分；缺失、路径失真或链接不可点击视为本章未完成。
+
 ### 第一部分：重写全景
 
 #### 第 1 章：项目全景、重写目标与四层架构
@@ -975,6 +993,7 @@ public interface Tool<I> {
 | ----- | ------------------------------- | ---------- | -------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
 | 第 1 章 | 四层架构与单向依赖（Maven 多模块 + ArchUnit） | Compatible | `mvn -q -DskipTests package`；`mvn verify`（foundation 1 + cli 3 条 ArchUnit 规则）；反向依赖红灯验证 | 已通过。原 TS 用目录约定+人工评审表达单向依赖，Java 用模块边界+ArchUnit 自动校验，语义一致、形式不同 |
 | 第 2 章 | Message 类型系统（4 role + 5 content 的双层可辨识联合） | Compatible | `mvn -pl helixent-foundation test`（MessageTypeTest 18 + WireDtoLeakTest 1，全绿）；删 case 的无 default `switch` 编译失败红灯验证 | 已通过。TS 双层字符串联合 → Java sealed interface + record + enum 判别；wire/internal casing 分界保留；Anthropic thinking signature 以 `providerMetadata` 不透明承载，wire DTO 不入 foundation |
+| 第 3 章 | Model / ModelProvider / ModelContext（invoke + stream 累计快照） | Compatible | `mvn -pl helixent-foundation test -Dtest=FakeProviderTest`（6 用例：最终帧=invoke、累计快照前缀性、空流异常、system prompt 首位、取消传播）；`mvn clean verify` 回归全绿 | 已通过。TS `AsyncGenerator<AssistantMessage>` → Java `ModelStream`(惰性 `Iterable`)，`last()` 消费最终帧；`AbortSignal` → `CancellationToken`/`CancellationTokenSource`；`options` → `ModelOptions`；system prompt 仍由 `Model` 拼装，provider 不感知 |
 
 ### 12.4 性能基线
 
