@@ -4,7 +4,8 @@
 >
 > 对应 roadmap 为本节设定的**核心问题**：
 >
-> > 接入第二个厂商时，哪些能复用、哪些必须定制？两家 API 的差异体现在哪？
+>> 接入第二个厂商时，哪些能复用、哪些必须定制？两家 API 的差异体现在哪？
+>>
 >
 > **一句边界声明**：本节精讲 **`src/community/anthropic/` 下的四个文件**——注意，是**四个**，比第 16 节的 OpenAI **少了一个 `types.ts`**（这个「缺失」本身就是一处差异，1.6 会解释）：
 >
@@ -17,7 +18,7 @@
 >
 > ⚠️ **一处「诚实标注」**：本节会不断和 [第 16 节](./16-openai-provider.md) 对照，因此**强烈建议先读完第 16 节再读本节**。本节不会重复讲解「什么是快照约定」「什么是 `toJSONSchema()`」这些第 16 节已经讲透的共性机制，而是把笔墨集中在**差异**上。凡是「和 OpenAI 一样」的地方，本节会一句带过并给出第 16 节的链接；凡是「和 OpenAI 不同」的地方，本节会停下来重点剖析——**这正是「先范本、后对照」的读法**。
 
-***
+---
 
 ## 0. 承上启下
 
@@ -40,7 +41,7 @@
 
 准备好了。我们同样先不看任何一个具体文件，而是先建立「**四个文件、共性骨架、五处差异**」的全局地图。
 
-***
+---
 
 ## 1. 主题内容
 
@@ -86,20 +87,20 @@
 
 **把它和第 16 节的地图并排看，「共性 vs 差异」一目了然：**
 
-| 维度 | OpenAI（§16 范本） | Anthropic（§17 对照） | 性质 |
-| --- | --- | --- | --- |
-| 文件数 | 5（含 `types.ts`） | **4（无 `types.ts`）** | 差异③ |
-| 编排壳 | `model-provider.ts` | `model-provider.ts` | **共性** |
-| 参数构建私有方法 | `_baseChatCompletionParams` | `_baseMessageParams` | **共性**（名不同、职责同） |
-| 翻译函数个数 | 3 | **4**（多一个 `extractSystemPrompt`） | 差异① |
-| system prompt | 留在 messages 里（原样透传） | **抽成顶层 `system` 参数** | 差异① |
-| 累积器对外接口 | `push` / `snapshot` | `push` / `snapshot` | **共性** |
-| 累积器内部 | 消费**扁平 delta**，按 `index` 归组 | 消费**事件序列**，状态机 | 差异② |
-| 思考链载体 | `reasoning_content` 字符串（`types.ts` 打补丁） | `thinking` 块 + **`signature`**（运行期塞属性） | 差异③ |
-| `baseURL` | 原样透传 | **等于默认就不传** | 差异④ |
-| `max_tokens` | 可选 | **必填**（默认 8192） | 差异⑤ |
-| `thinking.budget_tokens` | 无 | **自动推导** | 差异⑤ |
-| 空 tools 数组 | `tools ? ... : undefined` | **`length > 0` 才带 tools 字段** | 差异⑤ |
+| 维度                       | OpenAI（§16 范本）                                 | Anthropic（§17 对照）                                    | 性质                             |
+| -------------------------- | --------------------------------------------------- | --------------------------------------------------------- | -------------------------------- |
+| 文件数                     | 5（含`types.ts`）                                 | **4（无 `types.ts`）**                            | 差异③                           |
+| 编排壳                     | `model-provider.ts`                               | `model-provider.ts`                                     | **共性**                   |
+| 参数构建私有方法           | `_baseChatCompletionParams`                       | `_baseMessageParams`                                    | **共性**（名不同、职责同） |
+| 翻译函数个数               | 3                                                   | **4**（多一个 `extractSystemPrompt`）             | 差异①                           |
+| system prompt              | 留在 messages 里（原样透传）                        | **抽成顶层 `system` 参数**                        | 差异①                           |
+| 累积器对外接口             | `push` / `snapshot`                             | `push` / `snapshot`                                   | **共性**                   |
+| 累积器内部                 | 消费**扁平 delta**，按 `index` 归组         | 消费**事件序列**，状态机                            | 差异②                           |
+| 思考链载体                 | `reasoning_content` 字符串（`types.ts` 打补丁） | `thinking` 块 + **`signature`**（运行期塞属性） | 差异③                           |
+| `baseURL`                | 原样透传                                            | **等于默认就不传**                                  | 差异④                           |
+| `max_tokens`             | 可选                                                | **必填**（默认 8192）                               | 差异⑤                           |
+| `thinking.budget_tokens` | 无                                                  | **自动推导**                                        | 差异⑤                           |
+| 空 tools 数组              | `tools ? ... : undefined`                         | **`length > 0` 才带 tools 字段**                  | 差异⑤                           |
 
 **这张表就是本节的「地图 + 提纲」**：凡标「共性」的，本节一句带过（去看第 16 节）；凡标「差异①～⑤」的，就是本节要逐个剖开的看点。
 
@@ -668,18 +669,18 @@ function parseToolInput(partialJson: string): Record<string, unknown> {
 
 > 💡 **`StreamAccumulator` 对照总结——「接口相同、实现迥异」的活教材**：把两家的累积器摆在一起，你会看到一组精确的对应与背离：
 >
-> | 维度 | OpenAI 累积器 | Anthropic 累积器 |
-> | --- | --- | --- |
-> | 对外接口 | `push` / `snapshot` | `push` / `snapshot` ✅ **相同** |
-> | 对外产出 | 完整快照 AssistantMessage | 完整快照 AssistantMessage ✅ **相同** |
-> | 输入 | 扁平 delta chunk | 类型化 event（状态机） |
-> | 内部状态 | 3 字段 + usage | `blocks` Map + 2 token 数 + `hasFinalUsage` 布尔 |
-> | 块的创建 | 懒创建（遇到就建） | 显式（`content_block_start`） |
-> | 增量识别 | 靠字段存在性推断 | 靠 `delta.type` 标签 |
-> | 工具参数拼接 | `arguments +=` | `partialJson +=` ✅ **同理** |
-> | 残缺 JSON 策略 | 中途**扣留**、终态兜底 | **始终吐出**（id/name 已全） |
-> | usage/流结束哨兵 | `usage !== undefined` | `hasFinalUsage` 布尔 |
-> | signature | 无 | `signature_delta` 累积 + 附着 |
+> | 维度             | OpenAI 累积器                | Anthropic 累积器                                     |
+> | ---------------- | ---------------------------- | ---------------------------------------------------- |
+> | 对外接口         | `push` / `snapshot`      | `push` / `snapshot` ✅ **相同**            |
+> | 对外产出         | 完整快照 AssistantMessage    | 完整快照 AssistantMessage ✅**相同**           |
+> | 输入             | 扁平 delta chunk             | 类型化 event（状态机）                               |
+> | 内部状态         | 3 字段 + usage               | `blocks` Map + 2 token 数 + `hasFinalUsage` 布尔 |
+> | 块的创建         | 懒创建（遇到就建）           | 显式（`content_block_start`）                      |
+> | 增量识别         | 靠字段存在性推断             | 靠`delta.type` 标签                                |
+> | 工具参数拼接     | `arguments +=`             | `partialJson +=` ✅ **同理**                 |
+> | 残缺 JSON 策略   | 中途**扣留**、终态兜底 | **始终吐出**（id/name 已全）                   |
+> | usage/流结束哨兵 | `usage !== undefined`      | `hasFinalUsage` 布尔                               |
+> | signature        | 无                           | `signature_delta` 累积 + 附着                      |
 >
 > **对外那两行（接口 + 产出）纹丝不动，内部几乎每一格都不同**——这就是 [第 3 节](./03-model.md) `ModelProvider` 抽象「换厂商、上层不改」的**微观证据**：`Model.stream` 和 [第 5 节](./05-react-loop.md) 的 `_think` 只认「`push`/`snapshot`/完整快照」这个接口，**它们根本不知道、也不需要知道**下面接的是「扁平 delta」还是「事件状态机」。**抽象的价值，就在这张表『左右两列的上半截相同、下半截迥异』里体现得淋漓尽致。**
 
@@ -742,31 +743,23 @@ const model = new Model(entry.name, provider, { max_tokens: 16 * 1024, thinking:
 
 **一句话总括本节主题**：**`AnthropicModelProvider` 是 [第 3 节](./03-model.md) `ModelProvider` 契约的第二个真实实现。它照抄了第 16 节立下的「薄壳 + 静态翻译 + 动态累积」三件套骨架（共性），却在每一处协议接触面上各表一枝（差异）——① system 抽成顶层参数、② 流式累积器是消费事件序列的状态机（而非扁平 delta）、③ 思考链靠 `_anthropicSignature` 运行期属性携带 signature 往返（而非 `types.ts` 补丁）、④ baseURL 等于默认就不传、⑤ 一组 Anthropic 独有的参数归一（max_tokens 必填、budget_tokens 推导、空 tools 更严省略）。而无论内部如何殊途，两个 provider 最终都『同归』于同一件产出——第 3 节约定的「完整快照 AssistantMessage」，让上层「换厂商、代码一行不改」。至此，Helixent 的两大 wire 协议阵营（OpenAI 兼容 + Anthropic）全部就位，那台从第 5 节造好的 Agent 机器，拥有了两条可自由切换的真实动力源。**
 
-***
+---
 
 ## 2. 亮点与关键设计
 
 明确标注哪些是「妙笔」、哪些是「关键决策」——本节的亮点大多是**「对照式」的**：不是孤立地看一处设计，而是看它「相对第 16 节 OpenAI 差在哪、为什么」。
 
 1. **【核心妙笔·对照】两个 `StreamAccumulator` 同名同接口、内部却是两台机器。** OpenAI 的累积器消费「扁平 delta」（线性累加、按 index 懒建条目），Anthropic 的是「事件状态机」（`switch(event.type)` + 显式开块 + 类型化 delta）。但**两者对外都只有 `push` / `snapshot`、都吐「完整快照」**。这是 [第 3 节](./03-model.md) `ModelProvider` 抽象「换厂商上层不改」最有力的微观证据——**接口是焊死的共性，实现是自由的差异**（1.7）。
-
 2. **【关键决策·差异①】`system` prompt 抽成顶层参数（`extractSystemPrompt`）。** Anthropic 的 Messages API 不允许 `system` 待在 messages 数组里，必须作为顶层参数。于是 Anthropic 的 utils 比 OpenAI **多一个函数** `extractSystemPrompt`，配合 `convertToAnthropicMessages` 里的 `continue` 跳过 system。**「多出来的这个函数」本身，就是「协议差异催生代码差异」的最直白标本**（1.3、1.4）。
-
 3. **【核心妙笔·差异③】`signature` 用「运行期附着属性」`_anthropicSignature` 承载，不污染 Foundation 类型。** Anthropic 的 thinking 块在多轮对话里必须回传 `signature`，但这是纯厂商细节。Helixent 选择把它作为一个下划线私有属性挂在内部 thinking 对象上（入站存、出站取），**让 Foundation 的 `ThinkingContent` 类型对此一无所知**。这与 OpenAI 用 `types.ts` 交叉类型「在类型层扩展 `reasoning_content`」形成对比——**两种「携带厂商特有数据」的手法，各有适用场景**（1.4、1.5、Q3）。
-
 4. **【关键决策·差异⑤】`thinking.budget_tokens` 自动推导为 `max_tokens` 的 80%。** Anthropic 开启思考时强制要求 `budget_tokens`，但上层（CLI）只传了 `thinking: { type: "enabled" }`。provider 检测到「开思考但没给预算」时自动补齐（留 20% 给正式作答）。**这是「适配层默默吸收厂商强制约束、让上层保持朴素意图」的典范**（1.3、Q4）。
-
 5. **【妙笔·同中有异】残缺工具 JSON 的处理，两家「底线同、策略异」。** 都不把残缺 JSON 当 input（都 `{}` 兜底，共性）；但 OpenAI **流式中途扣留** tool_use（因 id/name 也可能残缺），Anthropic **始终吐出**（因 `content_block_start` 已确定 id/name）。**这说明「协议的信息量直接影响累积器的最优策略」——不是谁更严谨，而是各自协议下的最优解不同**（1.7，Q2）。
-
 6. **【关键决策·差异④】`baseURL` 等于默认值就不传，让 SDK 自己构造 URL。** 与 OpenAI「原样透传」相反。因为 Anthropic provider 主要服务 Claude 官方（默认 URL 是主场景），而 OpenAI provider 要服务近十家兼容厂商（传 baseURL 是主场景）。**同一个参数，两种处理，根源是两个 provider 的『定位』不同**（1.2）。
-
 7. **【一致性·共性】`invoke`/`stream` 共享参数构建、成对镜像翻译、`toJSONSchema()` 工具转换——三处骨架照抄第 16 节。** `_baseMessageParams`（对应 `_baseChatCompletionParams`）、出入两函数的可逆镜像、`convertToAnthropicTools` 站在 `toJSONSchema()` 上——这些**共性**证明了「第二个 provider 是填空题而非问答题」：抽象立得越好，新实现要写的「自由部分」越少（1.2、1.6）。
-
 8. **【妙笔·差异②的连锁反应】usage 从「一字段两用」变成「两数值 + 一布尔哨兵」。** OpenAI 的 usage 一次到齐，`usage !== undefined` 既是统计又是流终止信号。Anthropic 的 usage 分两批到达（`message_start` 给 input、`message_delta` 给 output），于是必须拆成 `inputTokens`/`outputTokens` 两个累计值 + 一个独立的 `hasFinalUsage` 布尔。**一处协议差异（事件序列），会连锁引发状态设计的差异**（1.7）。
-
 9. **【妙笔·内容块范式的红利】Anthropic 的「内容块数组」比 OpenAI「扁平字段」更贴近内部 `content` 数组。** assistant 的 text/thinking/tool_use 在 Anthropic 里都是并列的内容块（和内部分段数组同构），所以 assistant 翻译反而比 OpenAI「三段拆三字段」更直白。**这提示一个洞察：内部模型「贴近谁」是相对的——它贴近 OpenAI 的 wire（system/user 原样透传），却在结构范式上更像 Anthropic（内容块数组）**（1.4、1.5）。
 
-***
+---
 
 ## 3. 工业对比
 
@@ -811,17 +804,17 @@ LangChain 也是「一厂商一个类」（`ChatOpenAI`、`ChatAnthropic`、`Cha
 
 ### 3.5 一览表
 
-| 维度 | Helixent（一协议一 provider） | 万能适配器（if 分支） | LangChain（一厂商一类） | LiteLLM/网关 |
-| --- | --- | --- | --- | --- |
-| 新增厂商成本 | 加一个 provider 文件夹（照抄骨架） | 在大类里加分支 | 加一个 integration | 网关侧适配 |
-| 单 provider 内聚性 | **高（单协议干净实现）** | 低（多协议缠绕） | 高 | 不涉及（在网关） |
-| 流式对外语义 | **完整快照** | 视实现 | 增量 chunk | 视底层 |
-| 厂商特有数据 | 类型扩展 / 运行期附着（分场景） | 常污染统一模型 | 各 integration 各异 | 网关归一 |
-| 覆盖面 | 两大协议 + 兼容生态 | 视实现 | **极广** | **极广** |
-| 额外依赖 | 仅两家官方 SDK | 视实现 | 全家桶 | 网关 |
-| 契约共性保证 | **`ModelProvider` 接口焊死** | 靠自觉 | `BaseChatModel` 基类 | 网关 API |
+| 维度               | Helixent（一协议一 provider）        | 万能适配器（if 分支） | LangChain（一厂商一类） | LiteLLM/网关     |
+| ------------------ | ------------------------------------ | --------------------- | ----------------------- | ---------------- |
+| 新增厂商成本       | 加一个 provider 文件夹（照抄骨架）   | 在大类里加分支        | 加一个 integration      | 网关侧适配       |
+| 单 provider 内聚性 | **高（单协议干净实现）**       | 低（多协议缠绕）      | 高                      | 不涉及（在网关） |
+| 流式对外语义       | **完整快照**                   | 视实现                | 增量 chunk              | 视底层           |
+| 厂商特有数据       | 类型扩展 / 运行期附着（分场景）      | 常污染统一模型        | 各 integration 各异     | 网关归一         |
+| 覆盖面             | 两大协议 + 兼容生态                  | 视实现                | **极广**          | **极广**   |
+| 额外依赖           | 仅两家官方 SDK                       | 视实现                | 全家桶                  | 网关             |
+| 契约共性保证       | **`ModelProvider` 接口焊死** | 靠自觉                | `BaseChatModel` 基类  | 网关 API         |
 
-***
+---
 
 ## 4. 深度解释：为什么这样设计？不这样会怎样？
 
@@ -863,18 +856,21 @@ LangChain 也是「一厂商一个类」（`ChatOpenAI`、`ChatAnthropic`、`Cha
 先把两个字段的「一生」摊开对比：
 
 **`reasoning_content` 在 OpenAI provider 里的一生**（第 16 节 1.3/1.4/1.7）：
+
 - **出站**：`convertToOpenAIMessages` 要**写**它（thinking → reasoning_content）。
 - **入站**：`parseAssistantMessage` 要**读**它（reasoning_content → thinking）。
 - **流式**：`StreamAccumulator` 要从 `delta.reasoning_content` **累积**它。
 - **它在三个函数里被正经读写，且每次读写都希望『写错字段名时编译器能报错』。** → **值得用 `types.ts` 交叉类型给它一个正式的类型身份（答法 B）**，换来全程类型检查。
 
 **`signature` 在 Anthropic provider 里的一生**（1.4/1.5/1.7）：
+
 - **入站**：`parseAssistantMessage` 把 `block.signature` **原封不动**存进 `_anthropicSignature`。
 - **出站**：`convertToAnthropicMessages` 把 `_anthropicSignature` **原封不动**取出来还给 Anthropic。
 - **provider 从头到尾『不解读、不运算、不依赖』它的值**——它就是个「Anthropic 发来、下轮要还给 Anthropic」的黑盒令牌。
 - **它不参与任何逻辑，只需要『存得住、取得回』。** → **不值得为它建一个类型/文件，运行期挂个属性（答法 C）最轻便**。
 
 **这就是「同项目两手法」的答案——不是不统一，而是精准匹配数据性格**：一个字段「深度参与逻辑、多处读写」，就给它类型身份（B）；一个字段「纯透传、零解读」，就运行期附着（C）。**若强行统一成一种手法，反而更糟**：
+
 - 若 `signature` 也照 `reasoning_content` 建一个 `types.ts`——为一个「provider 根本不看内容」的透传物，专门造一套类型 + 一个文件，是**过度工程**。
 - 若 `reasoning_content` 也照 `signature` 用运行期属性（`as any` 到处飞）——它在三处被读写，失去类型检查后，**写错字段名、拼错大小写都不会报错**，是**埋雷**。
 
@@ -886,13 +882,13 @@ LangChain 也是「一厂商一个类」（`ChatOpenAI`、`ChatAnthropic`、`Cha
 
 把两处并排看，你会发现它们是一对「镜像」：
 
-| | `budget_tokens` 推导（本节 1.3） | `reasoning_content` 补丁（§16 1.6） |
-| --- | --- | --- |
-| 吸收的是 | 厂商的**强制输入要求**（开思考必须给 budget） | 厂商的**非标准输出字段**（兼容厂商返回 reasoning_content） |
-| 方向 | **出站**（请求发出前补齐） | **双向**（出站写、入站读） |
-| 上层的「朴素意图」 | 「我要开思考」（`type: "enabled"`） | 「有一种内容叫 thinking」 |
-| 适配层做的「脏活」 | 自动算一个 budget 补进请求 | 把 reasoning_content 翻译成内部 thinking |
-| 上层是否感知 | **完全无感** | **完全无感** |
+|                    | `budget_tokens` 推导（本节 1.3）                  | `reasoning_content` 补丁（§16 1.6）                           |
+| ------------------ | --------------------------------------------------- | ---------------------------------------------------------------- |
+| 吸收的是           | 厂商的**强制输入要求**（开思考必须给 budget） | 厂商的**非标准输出字段**（兼容厂商返回 reasoning_content） |
+| 方向               | **出站**（请求发出前补齐）                    | **双向**（出站写、入站读）                                 |
+| 上层的「朴素意图」 | 「我要开思考」（`type: "enabled"`）               | 「有一种内容叫 thinking」                                        |
+| 适配层做的「脏活」 | 自动算一个 budget 补进请求                          | 把 reasoning_content 翻译成内部 thinking                         |
+| 上层是否感知       | **完全无感**                                  | **完全无感**                                               |
 
 **共同的本质是——『意图向下、脏活留层』**：上层（Agent、CLI）只表达**跨厂商统一的朴素意图**（「开思考」「有 thinking 内容」），而**每家厂商为实现这个意图所需的特殊操作**（Anthropic 要 budget、OpenAI 兼容厂商用 reasoning_content 字段），全部被**关进各自的 provider 内部消化**。这样一来，**上层的代码对『接的是哪家』完全免疫**——`cli/index.tsx` 里那句 `thinking: { type: "enabled" }`，无论下面接 OpenAI 还是 Anthropic 都原样能用，差异被 provider 吸收了。
 
@@ -905,11 +901,13 @@ LangChain 也是「一厂商一个类」（`ChatOpenAI`、`ChatAnthropic`、`Cha
 **根据本节总结的规律，你会『照抄一套三件套骨架（共性），填入 Gemini 的协议差异（差异）』——而完全不用碰上面任何一层。这道『填空题』的边界，正是本节两个 provider 对照出来的规律。**
 
 **你『不用写、也不用改』的（因为是共性，被契约焊死）：**
+
 - **`ModelProvider` 契约本身**（[第 3 节](./03-model.md)）：`invoke`/`stream` 的签名、「完整快照」约定、`streaming` 打标规则——照着实现即可，一个字不改。
 - **上面所有层**：`Model`、Agent 循环、中间件、工具、CLI/TUI——它们只认契约，对新 provider 零感知。你**唯一要碰的「上层」，是 `cli/index.tsx` 那个 `if/else` 加一个分支**（以及 `model-providers.ts` 注册表加一行），仅此而已。
 - **内部 `Message` / `AssistantMessage` 类型**：保持中立、纯净，绝不为 Gemini 加字段（Q3 的战略底线）。
 
 **你『必须写』的（因为是差异，Gemini 的协议自有脾气）——照本节的「五处差异」清单逐一回答 Gemini 是怎样的：**
+
 - **`model-provider.ts`（薄壳）**：照抄骨架，然后回答——Gemini 的 `baseURL` 要不要特殊处理（差异④）？有没有类似 `budget_tokens`/`max_tokens` 的强制参数要归一（差异⑤）？
 - **`utils.ts`（翻译）**：回答——Gemini 的 system prompt 放哪（差异①，Gemini 用 `systemInstruction`，又是一种放法，得写个类似 `extractSystemPrompt` 的抽取）？它的 message/content 结构长啥样（user/assistant/tool 各怎么翻译）？工具参数走字符串还是对象？思考链（如果有）怎么表达？
 - **`stream-utils.ts`（累积）**：回答——Gemini 的流式是扁平 delta 还是事件序列（差异②）？据此把 `StreamAccumulator` 写成「线性累加」还是「状态机」？它的 usage 一次到齐还是分批（决定用 `usage!==undefined` 还是布尔哨兵）？残缺工具 JSON 时能不能尽早拿到 id/name（决定「扣留」还是「始终吐出」）？
@@ -917,13 +915,14 @@ LangChain 也是「一厂商一个类」（`ChatOpenAI`、`ChatAnthropic`、`Cha
 
 **看出来了吗？** 本节（配合第 16 节）实际上为你**提炼出了一张「接入新厂商的检查清单」**——它就是那「五处差异」。**接第三家、第四家厂商，本质上就是『拿着这张清单，逐项回答新厂商是怎样的』**。这就是「先范本、后对照」教学法的最终目的：**第 16 节给你看『一个 provider 的完整长相』，第 17 节带你对照出『provider 之间会在哪五个关节处产生差异』——两节合起来，你手里就有了一张可复用的、接入任意新厂商的地图。** 这，也正是 `ModelProvider` 这个抽象最大的价值：**它把「接入一家新厂商」从一道开放的『问答题』，收敛成了一道边界清晰的『填空题』。**
 
-***
+---
 
 ## 5. 参考资料
 
 **本节精讲的源码（四个文件）**：
 
 `src/community/anthropic/`：
+
 - [model-provider.ts](../../src/community/anthropic/model-provider.ts)（88 行）——`AnthropicModelProvider` 编排壳
   - 构造函数（`baseURL` 等于默认就不传，差异④）：[L19-L27](../../src/community/anthropic/model-provider.ts#L19-L27)
   - `invoke`（非流式：messages.create → parseAssistantMessage）：[L29-L34](../../src/community/anthropic/model-provider.ts#L29-L34)
@@ -947,33 +946,38 @@ LangChain 也是「一厂商一个类」（`ChatOpenAI`、`ChatAnthropic`、`Cha
 - [anthropic/index.ts](../../src/community/anthropic/index.ts)（1 行）——桶文件，只导出 `model-provider`
 
 **co-located 测试（[第 21 节](./00-roadmap.md) 会讲这套约定）**：
+
 - [utils.test.ts](../../src/community/anthropic/__tests__/utils.test.ts)——`extractSystemPrompt`（多种拼接）/ 出站四种 role（system 排除、user image、assistant thinking、tool→user）/ 入站解析（含 signature）/ 工具转换
 - [stream-utils.test.ts](../../src/community/anthropic/__tests__/stream-utils.test.ts)——text/thinking 累加 / **signature_delta 更新** / tool_use JSON 渐进拼接 / **残缺 JSON 仍吐出 `input:{}`**（与 OpenAI 扣留对比）/ message_start+message_delta 的 usage 合并 / 多块保序 / 忽略无关事件 / 空 text 块过滤
 
 **上游依赖章节**：
+
 - [第 3 节 · Model 与 ModelProvider](./03-model.md)：本节实现的 `ModelProvider` 契约（`invoke`/`stream`、完整快照、`streaming` 打标、`usage` 映射）——本节是这份契约的**第二个真实实现**，与第 16 节共同证明「换厂商上层不改」
 - [第 2 节 · Message 消息类型系统](./02-message.md)：内部 `Message` 的四种 role 与内容段——本节的翻译逻辑处处以它为「中立目标格式」（Anthropic 的内容块数组反而比 OpenAI 扁平字段更贴近它）
 - [第 4 节 · Tool 工具系统](./04-tool.md)：`parameters.toJSONSchema()`（`convertToAnthropicTools` 与 OpenAI 版共享的调用点，只是包装成 `input_schema`）
 - [第 16 节 · OpenAI Provider](./16-openai-provider.md)：**本节的「范本」与全程对照对象**——三件套骨架、`StreamAccumulator` 的 push/snapshot 约定、`reasoning_content` 的 `types.ts` 补丁、`temperature:0` 默认、baseURL 原样透传，都是本节反复对照的基准
 
 **下游承接章节（本节埋的接口）**：
+
 - [第 18 节 · CLI 入口、配置与持久化](./00-roadmap.md)：`AnthropicModelProvider` 如何在 `cli/index.tsx` 被 `if (entry.provider === "anthropic")` 分流实例化、`MODEL_PROVIDERS` 注册表里 Anthropic 的 `providerType` 与 `baseURL`、`baseURL`/`apiKey` 从配置读入
 - [第 5 节 · ReAct 主循环](./05-react-loop.md)：`_think` 如何消费本节 `stream` 吐出的快照（`latest = snapshot`）——它对「下面接 OpenAI 还是 Anthropic」完全无感，正是本节「共性」的受益者
 
 **关联源码（本节引用但不精讲）**：
+
 - 契约定义：[model-provider.ts](../../src/foundation/models/model-provider.ts)、[model.ts](../../src/foundation/models/model.ts)（`options` 如何透传到 provider）
 - 内部类型：[content.ts](../../src/foundation/messages/types/content.ts)（`ThinkingContent` 只有 `{type,thinking}`——signature 无处安放，故用运行期属性）
 - 装配处：[cli/index.tsx L44-L62](../../src/cli/index.tsx#L44-L62)、[model-providers.ts](../../src/cli/model-providers.ts)（11 家厂商，仅 Anthropic 是 `providerType: "anthropic"`）
 - 对照实现：[openai/model-provider.ts](../../src/community/openai/model-provider.ts)、[openai/utils.ts](../../src/community/openai/utils.ts)、[openai/stream-utils.ts](../../src/community/openai/stream-utils.ts)、[openai/types.ts](../../src/community/openai/types.ts)（第 16 节精讲，本节全程对照）
 
 **外部资料**：
-- Anthropic Messages API（`system` 顶层参数、`max_tokens` 必填、`tools`/`tool_use`/`tool_result`）：<https://docs.anthropic.com/en/api/messages>
-- Anthropic 流式事件（`message_start` / `content_block_start` / `content_block_delta` / `message_delta`）：<https://docs.anthropic.com/en/docs/build-with-claude/streaming>
-- Anthropic Extended Thinking（`thinking.budget_tokens`、thinking 块与 `signature` 的多轮回传）：<https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking>
-- Anthropic TypeScript SDK（`messages.create`、`RawMessageStreamEvent` 类型）：<https://github.com/anthropics/anthropic-sdk-typescript>
-- OpenAI vs Anthropic 消息格式差异（system 位置、内容块 vs 扁平字段）：<https://docs.anthropic.com/en/api/openai-sdk>（Anthropic 官方的「OpenAI 兼容」说明，反向印证两家差异）
 
-***
+- Anthropic Messages API（`system` 顶层参数、`max_tokens` 必填、`tools`/`tool_use`/`tool_result`）：[https://docs.anthropic.com/en/api/messages](https://docs.anthropic.com/en/api/messages)
+- Anthropic 流式事件（`message_start` / `content_block_start` / `content_block_delta` / `message_delta`）：[https://docs.anthropic.com/en/docs/build-with-claude/streaming](https://docs.anthropic.com/en/docs/build-with-claude/streaming)
+- Anthropic Extended Thinking（`thinking.budget_tokens`、thinking 块与 `signature` 的多轮回传）：[https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking](https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking)
+- Anthropic TypeScript SDK（`messages.create`、`RawMessageStreamEvent` 类型）：[https://github.com/anthropics/anthropic-sdk-typescript](https://github.com/anthropics/anthropic-sdk-typescript)
+- OpenAI vs Anthropic 消息格式差异（system 位置、内容块 vs 扁平字段）：[https://docs.anthropic.com/en/api/openai-sdk](https://docs.anthropic.com/en/api/openai-sdk)（Anthropic 官方的「OpenAI 兼容」说明，反向印证两家差异）
+
+---
 
 ## 6. 小结与下一节预告
 

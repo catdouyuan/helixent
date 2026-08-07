@@ -4,7 +4,8 @@
 >
 > 对应 roadmap 为本节设定的**核心问题**：
 >
-> > 敲下 `helixent` 之后到底发生了什么？模型配置和第 15 节的审批白名单，究竟存在哪、怎么读写？
+>> 敲下 `helixent` 之后到底发生了什么？模型配置和第 15 节的审批白名单，究竟存在哪、怎么读写？
+>>
 >
 > **一句边界声明**：本节精讲 **`src/cli/` 下的「外壳 + 落盘」这半边**——注意，是**半边**。`src/cli/` 目录很大，但它其实由两块拼成：一块是**「命令行外壳 + 配置持久化」**（本节），另一块是**「TUI 界面」**（`tui/*`，留给第 19～20 节）。本节精讲的文件清单如下，可分为**四组**：
 >
@@ -17,7 +18,7 @@
 >
 > ⚠️ **一处「诚实标注」**：本节会**多次点到 TUI**（`render(<App/>)`、`AgentLoopProvider`、first-run 向导用的 Ink 组件），但**只讲到「把它们实例化并挂载」为止**——它们内部「React 如何渲染到终端、状态如何流转」的机制，是第 19～20 节的任务。凡是遇到 TUI 组件，本节一律「装配即止」，并给出后续章节的链接。请把本节读成一部**「开机启动脚本 + 磁盘读写手册」**，而不是「界面教程」。
 
-***
+---
 
 ## 0. 承上启下
 
@@ -41,12 +42,11 @@
    ```
 
    第 15 节反复强调：`coding` 层**只认这个契约、绝不碰磁盘**——`createCodingApprovalMiddleware` 里 `loadAllowList` 默认是「返回空集合」，`persistAllowedTool` 默认是「什么都不做」。**谁来提供真实的读写实现？** 第 15 节把这个问题原封不动推给了本节。本节的 `SettingsLoader` / `SettingsWriter` 就是那对签名的**唯一真实实现**。
-
 2. **[第 16～17 节](./16-openai-provider.md) 的两个 `ModelProvider` 实现，以及它们的构造参数。** 两个 provider 的 `constructor` 都收 `{ baseURL, apiKey }`。第 17 节结尾专门点了一句：「`cli/index.tsx` 里 `if (entry.provider === "anthropic")` 分流实例化……`baseURL`/`apiKey` 从配置读入。」**这个 `entry` 到底是什么、从哪读？** 也留给了本节。答案就是本节 1.3 要讲的 `ModelEntry`——一条存在 `config.yaml` 里的模型配置记录。
 
 准备好了。我们先不看任何一个具体文件，而是先建立**「一次启动的两条命运线」+「两套持久化系统」**的全局地图——因为本节最容易让人迷路的地方，就是**把「配置模型」和「审批白名单」这两套持久化搞混**。有了地图，再逐个击破。
 
-***
+---
 
 ## 1. 主题内容
 
@@ -77,15 +77,15 @@ Helixent 是一个 CLI 程序，它的生命从 `index.ts`（项目根）转入 
 
 **维度二：磁盘上，有「两套持久化」**（很多人会混淆，务必分清）：
 
-| 维度 | ① 模型配置 | ② 审批白名单 |
-| --- | --- | --- |
-| **存什么** | 有哪些模型、各自的 `baseURL`/`APIKey`/`provider`、默认用哪个 | 哪些危险工具「本项目免审批」 |
-| **文件** | `~/.helixent/config.yaml`（**单一全局文件**） | `settings.json`（**三层**：用户级 / 项目级 / 项目本地级） |
-| **格式** | **YAML** | **JSON** |
-| **谁读** | `cli/index.tsx` 启动时读一次、`commands/*` 增删改 | 每次工具审批前 `loadAllowList` 读（第 15 节中间件） |
-| **谁写** | `saveConfig`（**原子替换整份**） | `appendAllowedTool`（**增量并入 local 层**） |
-| **主要代码** | `config/*`、`commands/*`、`bootstrap/*` | `settings/*` |
-| **对接的上游契约** | 第 16/17 节 provider 的 `{baseURL, apiKey}` | 第 15 节的 `ApprovalPersistence` |
+| 维度                     | ① 模型配置                                                       | ② 审批白名单                                                     |
+| ------------------------ | ----------------------------------------------------------------- | ----------------------------------------------------------------- |
+| **存什么**         | 有哪些模型、各自的`baseURL`/`APIKey`/`provider`、默认用哪个 | 哪些危险工具「本项目免审批」                                      |
+| **文件**           | `~/.helixent/config.yaml`（**单一全局文件**）             | `settings.json`（**三层**：用户级 / 项目级 / 项目本地级） |
+| **格式**           | **YAML**                                                    | **JSON**                                                    |
+| **谁读**           | `cli/index.tsx` 启动时读一次、`commands/*` 增删改             | 每次工具审批前`loadAllowList` 读（第 15 节中间件）              |
+| **谁写**           | `saveConfig`（**原子替换整份**）                          | `appendAllowedTool`（**增量并入 local 层**）              |
+| **主要代码**       | `config/*`、`commands/*`、`bootstrap/*`                     | `settings/*`                                                    |
+| **对接的上游契约** | 第 16/17 节 provider 的`{baseURL, apiKey}`                      | 第 15 节的`ApprovalPersistence`                                 |
 
 **记住这张表**：本节接下来的 1.2 讲「命运线的分岔点」（`cli/index.tsx`），1.3～1.7 讲**持久化①**（配置模型：schema → 读写 → 子命令 → 向导），1.8 讲**持久化②**（审批白名单：落地第 15 节契约），1.9 再回到 `cli/index.tsx` 把两条线在「装配现场」合流。**每讲一个文件，我都会先标注它属于哪条命运线、动的是哪套持久化**，你就不会迷路。
 
@@ -165,11 +165,9 @@ export type ModelEntry = z.infer<typeof modelEntrySchema>;
 1. **`ModelEntry`——一条模型记录**。四个字段：`name`（模型名，也是「主键」）、`baseURL`（厂商 API 地址）、`APIKey`（钥匙）、`provider`（`"openai"` | `"anthropic"`）。前三个都用 `.min(1)` 强制**非空字符串**——空的 `baseURL` 或 `APIKey` 是配置里最常见的「手滑」，Zod 在读盘那一刻就把它拦下（对应 [schema.test.ts](../../src/cli/config/__tests__/schema.test.ts#L53-L78) 里那三条 `rejects empty ...` 测试）。
 
    > **回收第 17 节的伏笔**：注意 `provider` 字段——它就是第 17 节结尾说的、`cli/index.tsx` 里 `if (entry.provider === "anthropic")` 分流所依据的那个值。这里用 `z.enum` 把它锁死成两个合法值，`.optional().default("openai")` 意味着：**老配置文件里没有这个字段也能读，且默认当成 OpenAI**——这是一个**向后兼容**的贴心设计（1.3 末尾会展开）。
-
+   >
 2. **`HelixentConfig`——整份配置**。两个字段：`models`（模型数组，`.min(1)` 要求**至少一条**）和 `defaultModel`（默认模型名，可选）。
-
 3. **`.superRefine` 做「跨字段一致性校验」**。单看 `models`、`defaultModel` 各自合法还不够——还得保证 `defaultModel` **确实指向一个存在的模型**。`z.object` 的普通校验只能管单字段，管不了「A 字段的值必须在 B 字段里能找到」这种**关联约束**，所以用 `superRefine`：只要 `defaultModel` 设了、却在 `models` 里找不到同名项，就 `addIssue` 报一条自定义错误（对应 [schema.test.ts](../../src/cli/config/__tests__/schema.test.ts#L116-L124) 的 `rejects defaultModel that does not match`）。**这一条把「悬空的默认模型」这种脏状态挡在了门外**——否则启动时按 `defaultModel` 去找模型会找到 `undefined`，崩在更晚、更难查的地方。
-
 4. **`z.infer` 反向导出 TS 类型**。`HelixentConfig` 和 `ModelEntry` 两个类型**不是手写的**，而是从 schema 用 `z.infer` **推导**出来的。好处是：schema 改一个字段，类型自动跟着变，**永远不会出现「schema 和类型对不上」的漂移**。全项目哪里用到配置对象，`import type { ModelEntry }` 即可，拿到的永远是这份 schema 的最新形状。
 
 **`.optional().default("openai")` 的深意——向后兼容**：Helixent 早期可能只支持 OpenAI，那时的 `config.yaml` 里根本没有 `provider` 字段。等到第 17 节加入 Anthropic，就必须回答「老配置怎么办」。这里的答案很优雅：`provider` **可选**（老文件不写也合法）+ **默认 `"openai"`**（不写就当成 OpenAI，与老行为完全一致）。于是**升级 Helixent 不需要用户改任何配置文件**——这是「schema 演进」的教科书式处理。对应 [schema.test.ts](../../src/cli/config/__tests__/schema.test.ts#L41-L51) 的 `defaults provider to openai when not specified`。
@@ -232,7 +230,6 @@ export function saveConfig(config: HelixentConfig): void {
 两处「妙笔」：
 
 1. **读写两端都过 `helixentConfigSchema.parse`**。`loadConfig` 读进来先校验——磁盘上被手工改坏的 YAML（比如删光了 `models`）会在这里被 Zod 拦下、抛出清晰错误，而不是带着脏数据往下跑。`saveConfig` 写出去**也**先校验——保证「凡是落盘的配置，一定是合法的」，程序自己也不会写出脏文件。**schema 成了读写两个方向共同的「关卡」**，这正是 1.3 那份「宪法」的执法现场。
-
 2. **`saveConfig` 用「临时文件 + `rename`」做原子写**。它不直接往 `config.yaml` 里写，而是先写一个带 `pid` 和时间戳的临时文件（`config.yaml.12345.1699...tmp`），写完再 `renameSync` 到目标名。**为什么？** 因为 `rename` 在同一文件系统上是**原子操作**——要么整份换成新的，要么保持旧的，**绝不会出现「写到一半进程被杀、留下半个残缺 YAML」的情况**。`pid`+时间戳后缀则避免了多进程同时写时临时文件互相踩踏。这是「安全写文件」的经典手法，第 21 节讲工程质量时还会再遇到类似思路。
 
 **第三组：环境与目录的「就绪保障」**
@@ -526,6 +523,7 @@ class SettingsLoader {
 3. **合并语义的精细分野**（`mergeSettingsLayers`）：这是最讲究的一点——**`permissions.allow` 是「并集累加」（union），其余字段是「后层覆盖前层」（last-wins）**。也就是说，三层里的 allow 列表会被**求并集**（用户信任的 + 项目信任的 + 本地信任的，全都算数）；而别的普通字段则是「越靠后（越本地）的层优先」。为什么 allow 要用并集？因为白名单是**「信任的叠加」**——用户级信任的、项目级信任的，都应该生效，不该被本地层「覆盖没了」。这个分野由 [settings-loader.test.ts](../../src/cli/settings/__tests__/settings-loader.test.ts#L27-L74) 的 `unions permissions.allow` 和 `last layer wins for non-allow keys` 两条测试锁死。
 
    > 加载时还有**容错**：某一层文件读不动（不存在 / 非法 JSON / schema 不过）不会让整个加载崩溃，而是把那一层当成空 `{}` 跳过（`loadLayer` 里的 `safeParse` + `console.warn`）——对应 [settings-loader.test.ts](../../src/cli/settings/__tests__/settings-loader.test.ts#L45-L56) 的 `ignores invalid user layer and still merges ...`。**一层坏了不牵连另外两层**。
+   >
 
 **`settings-writer.ts`——只写 local 层的增量写入**（[settings-writer.ts](../../src/cli/settings/settings-writer.ts)）：这是「写」的一侧，也是 `persistAllowedTool` 的真身：
 
@@ -685,35 +683,25 @@ render(
 
 **看懂这张图，你就看懂了「敲下 `helixent` 之后到底发生了什么」的全部**：读两套持久化 → 按配置选模型、分流 provider → 包 Model → 总装 Agent（把第 15 节的 Manager 和 1.7 的落盘实现一并注入）→ render 交给 TUI。**这也是整套教程「自底向上」造零件、终于在此「合流成品」的高光时刻。**
 
-***
+---
 
 ## 2. 亮点与关键设计
 
 回顾全节，把散落的「妙笔」和「关键决策」拎出来，明确标注哪些是**关键决策**（架构层面、影响深远）、哪些是**妙笔**（局部精巧、值得抄作业）：
 
 1. **【关键决策】两套持久化物理隔离**：模型配置（`config.yaml`，YAML，单一全局）与审批白名单（`settings.json`，JSON，三层）分开，因为二者的本质不同——**「账户信息（全局唯一）」vs「信任策略（可分层叠加）」**。这是本节最该带走的架构直觉：**不要因为「都是配置」就把性质不同的东西塞进一个文件**。
-
 2. **【关键决策】依赖倒置落地第 15 节契约**：`coding` 层只定义 `ApprovalPersistence` 两个函数签名、绝不碰磁盘；`cli` 层的 `SettingsLoader/Writer` 提供真实实现，在 `cli/index.tsx` 第 ⑥ 步注入。**上层（coding）定义抽象、下层（cli）提供实现**——这让 `coding` 可以脱离文件系统被单测（喂个假的 `ApprovalPersistence` 即可），也让持久化方式将来能整体替换（换成数据库？只改 cli 层）。
-
 3. **【关键决策】`args.length` 一刀切分两条命运线**：有参跑子命令（纯配置 CLI，不碰 TUI/模型），无参进 TUI（完整装配）。把最高频的「对话」放在零参数最短路径上。
-
 4. **【妙笔】读写两端都过同一个 Zod schema**：`loadConfig` 和 `saveConfig` 都调 `helixentConfigSchema.parse`——schema 成为读写双向的唯一「关卡」，磁盘上永远不会存在不合法的配置。schema 还用 `z.infer` 反向导出 TS 类型，杜绝「类型与校验漂移」。
-
 5. **【妙笔】临时文件 + `rename` 的原子写**：`saveConfig` 先写 `.tmp` 再 `renameSync`，`pid`+时间戳后缀防并发踩踏——彻底杜绝「写一半崩溃留下半个 YAML」。
-
 6. **【妙笔】`provider` 字段 `.optional().default("openai")` 的向后兼容**：老配置文件没有这个字段也能读、默认当 OpenAI——加入 Anthropic 支持后，用户升级无需改任何配置。
-
 7. **【妙笔】allow 用「并集」、其余字段用「后层覆盖」的合并分野**：白名单是「信任的叠加」（三层求并），普通字段是「越本地越优先」（last-wins）。同一个合并函数里两种语义各得其所。
-
 8. **【妙笔】「读三层、只写最本地一层」的不对称**：`load` 合并用户/项目/本地三层，`appendAllowedTool` 却只写 `settings.local.json`——精准匹配 `allow_always_project` 的语义（我这台机器信任这个项目），既不污染全局也不影响队友。
-
 9. **【妙笔】`appendToolToAllowList` 抽成纯函数**：把「合并逻辑」和「磁盘 IO」解耦，前者能被大量用例脱离文件系统单测，后者只是薄薄一层 `Bun.write`。
-
 10. **【妙笔】`/dev/tty` 兜底交互**：`promptSelectModelName` 在 stdin 被管道占用时回退到 `/dev/tty`，让「管道 + 交互」共存——命令行工具的老练细节。
-
 11. **【妙笔】三处「不信任磁盘脏状态」的防御**：`add` 读失败当空、`validateIntegrity` 特判 `models:[]`、`loadLayer` 一层坏了不牵连其他层——处处假设「磁盘上的文件可能是脏的」，绝不因单点脏数据全盘崩溃。
 
-***
+---
 
 ## 3. 工业对比
 
@@ -723,22 +711,22 @@ render(
 
 Helixent 的「用户级 / 项目级 / 项目本地级」三层 settings，几乎是**照着 Claude Code 与 VS Code 的分层模型来的**：
 
-| 工具 | 分层 | `.local` 不入库约定 | 合并语义 |
-| --- | --- | --- | --- |
-| **Helixent** | 用户(`~/.helixent`) / 项目(`.helixent/settings.json`) / 本地(`.helixent/settings.local.json`) | 是（`.local` 由 `.gitignore` 排除） | allow 并集、其余 last-wins |
-| **Claude Code** | 用户(`~/.claude`) / 项目(`.claude/settings.json`) / 本地(`.claude/settings.local.json`) | 是 | 类似（permissions 累加） |
-| **VS Code** | User / Workspace / Folder | 部分（`.vscode/` 常提交） | 后层覆盖前层 |
+| 工具                  | 分层                                                                                                | `.local` 不入库约定                   | 合并语义                   |
+| --------------------- | --------------------------------------------------------------------------------------------------- | --------------------------------------- | -------------------------- |
+| **Helixent**    | 用户(`~/.helixent`) / 项目(`.helixent/settings.json`) / 本地(`.helixent/settings.local.json`) | 是（`.local` 由 `.gitignore` 排除） | allow 并集、其余 last-wins |
+| **Claude Code** | 用户(`~/.claude`) / 项目(`.claude/settings.json`) / 本地(`.claude/settings.local.json`)       | 是                                      | 类似（permissions 累加）   |
+| **VS Code**     | User / Workspace / Folder                                                                           | 部分（`.vscode/` 常提交）             | 后层覆盖前层               |
 
 **Helixent 的取舍**：它选了「Claude Code 式」的三层 + `.local` 不入库，且**对 permissions.allow 特意用并集而非覆盖**——这比 VS Code 的「一律后层覆盖」更贴合「信任只增不减」的安全语义。代价是合并逻辑更复杂（要区分 allow 和其他字段），但换来了「团队共享的项目级信任 + 个人本地信任能叠加生效」的正确行为。
 
 ### 3.2 模型配置：Helixent `config.yaml` vs Aider / Codex / Continue
 
-| 工具 | 模型配置位置 | 格式 | 多模型 |
-| --- | --- | --- | --- |
-| **Helixent** | `~/.helixent/config.yaml` | YAML | 支持，带 `defaultModel` |
-| **Aider** | `.aider.conf.yml` + 环境变量 | YAML | 通过 `--model` 切换 |
-| **OpenAI Codex CLI** | `~/.codex/config.toml` | TOML | 支持 profile |
-| **Continue** | `~/.continue/config.json` | JSON | 支持 models 数组 |
+| 工具                       | 模型配置位置                   | 格式 | 多模型                   |
+| -------------------------- | ------------------------------ | ---- | ------------------------ |
+| **Helixent**         | `~/.helixent/config.yaml`    | YAML | 支持，带`defaultModel` |
+| **Aider**            | `.aider.conf.yml` + 环境变量 | YAML | 通过`--model` 切换     |
+| **OpenAI Codex CLI** | `~/.codex/config.toml`       | TOML | 支持 profile             |
+| **Continue**         | `~/.continue/config.json`    | JSON | 支持 models 数组         |
 
 **共性**：都把「模型 + key + baseURL」这类账户信息放在**用户家目录的单一文件**里，与「项目级行为配置」分开。**Helixent 的特点**：用 YAML（比 JSON 可读、比 TOML 通用），用 Zod 在读写两端强校验（很多工具只在读时松散解析），且 `provider` 字段驱动的「一个字段决定用哪个 SDK」设计，让「11 家厂商共用 2 个 Provider 实现」（呼应第 16/17 节）。
 
@@ -760,7 +748,7 @@ Helixent 用 [Commander](https://github.com/tj/commander.js) 组织子命令。�
 
 **结论**：对 Helixent 「配置管理是辅助、对话才是主业」的定位，Commander 是恰当的轻量选择。
 
-***
+---
 
 ## 4. 深度解释：为什么这样设计？不这样会怎样？
 
@@ -788,6 +776,7 @@ Helixent 用 [Commander](https://github.com/tj/commander.js) 组织子命令。�
 **看似绕，实则是「分层架构」的刚需**。回忆 [第 1 节](./01-overview.md) 的单向依赖约束：`foundation ← agent/coding ← cli`。`coding` 层**不允许**依赖 `cli` 层，也**不应该**知道「配置存在哪、什么格式」这种 `cli` 层的细节。
 
 **如果让 `coding` 的审批中间件直接写文件会怎样？**
+
 - `coding` 就得 `import` `settings-writer`、知道 `settings.local.json` 的路径规则、JSON 格式——**它被焊死在了「文件系统 + 这套 settings 布局」上**。
 - `coding` 的单测就必须准备真实文件、临时目录——**测试变慢、变脆**。
 - 将来想把白名单换成数据库 / 远程配置？得改 `coding` 核心——**违反「对修改关闭」**。
@@ -808,14 +797,13 @@ Helixent 用 [Commander](https://github.com/tj/commander.js) 组织子命令。�
 **这个问题能检验你有没有真正理解「装配 vs 零件」的分离**。
 
 - **本节的 `cli/index.tsx` 是「装配脚本」，前 17 节是「零件」**。零件（Message、Model、Provider、Tool、Agent、中间件、Manager）本身**不知道自己会被谁装配、装配成什么形态**——它们只暴露构造参数和接口。`cli/index.tsx` 干的活，就是「读配置 → 选零件 → 按顺序拼起来 → 挂到 Ink 界面上」。
-
 - **接一个 Web 界面要改什么？** 你要写一个新的「装配脚本」（比如 `web/server.ts`），它同样会：`loadConfig` → 按 `provider` 实例化 Provider → `new Model` → `createCodingAgent`（注入 `askUser`/`approvalPersistence`）。**这一大段几乎可以照抄**——因为它拼的零件完全一样。
 - **不用改什么？** 前 17 节的**所有零件一行都不用动**：Provider 照样连模型、Agent 照样跑循环、审批中间件照样调 `ApprovalPersistence`。
 - **要重写什么？** 只有**两处「界面适配」**：① 把 `askUser`/`askUserQuestion` 从「Ink 弹窗」换成「Web 端的 HTTP/WebSocket 交互」（第 15 节的 Manager 是「队列 + 订阅」模型，正是为「任意 UI 都能 subscribe」而设计的——Web 端也能 subscribe）；② 把 `render(<App/>)` 换成「起一个 Web server、把 `agent.stream()` 的事件推给前端」。持久化两套（config + settings）**完全复用**，甚至审批白名单还能沿用同一套三层 settings。
 
 **这就是本节装配现场的深层价值**：它证明了「前 17 节的分层」是真的解耦了——**换界面 = 换一个装配脚本 + 两处界面适配，核心零件零改动**。第 15 节的「Manager 队列/订阅」和本节的「`ApprovalPersistence` 契约」，就是为这种「界面可替换」预留的两个接缝。
 
-***
+---
 
 ## 5. 参考资料
 
@@ -859,15 +847,15 @@ Helixent 用 [Commander](https://github.com/tj/commander.js) 组织子命令。�
 
 **外部资料**：
 
-- Commander.js（子命令、`command`/`action`/`version`）：<https://github.com/tj/commander.js>
-- Zod（`z.enum`、`.optional().default()`、`superRefine`、`.passthrough()`、`z.infer`）：<https://zod.dev>
-- YAML for JavaScript（`yaml` 包的 `parse`/`stringify`）：<https://eemeli.org/yaml/>
-- POSIX `rename(2)` 的原子性保证：<https://pubs.opengroup.org/onlinepubs/9699919799/functions/rename.html>
-- Claude Code settings 分层（`settings.json` / `settings.local.json` / 用户级）：<https://docs.anthropic.com/en/docs/claude-code/settings>
-- VS Code settings 层级（User / Workspace / Folder）：<https://code.visualstudio.com/docs/getstarted/settings>
-- Bun 文件 API（`Bun.file` / `Bun.write` / `Bun.env`）：<https://bun.sh/docs/api/file-io>
+- Commander.js（子命令、`command`/`action`/`version`）：[https://github.com/tj/commander.js](https://github.com/tj/commander.js)
+- Zod（`z.enum`、`.optional().default()`、`superRefine`、`.passthrough()`、`z.infer`）：[https://zod.dev](https://zod.dev)
+- YAML for JavaScript（`yaml` 包的 `parse`/`stringify`）：[https://eemeli.org/yaml/](https://eemeli.org/yaml/)
+- POSIX `rename(2)` 的原子性保证：[https://pubs.opengroup.org/onlinepubs/9699919799/functions/rename.html](https://pubs.opengroup.org/onlinepubs/9699919799/functions/rename.html)
+- Claude Code settings 分层（`settings.json` / `settings.local.json` / 用户级）：[https://docs.anthropic.com/en/docs/claude-code/settings](https://docs.anthropic.com/en/docs/claude-code/settings)
+- VS Code settings 层级（User / Workspace / Folder）：[https://code.visualstudio.com/docs/getstarted/settings](https://code.visualstudio.com/docs/getstarted/settings)
+- Bun 文件 API（`Bun.file` / `Bun.write` / `Bun.env`）：[https://bun.sh/docs/api/file-io](https://bun.sh/docs/api/file-io)
 
-***
+---
 
 ## 6. 小结与下一节预告
 

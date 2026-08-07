@@ -4,7 +4,8 @@
 >
 > 对应 roadmap 为本节设定的**核心问题**：
 >
-> > 危险操作（跑命令、改文件）如何在执行前弹给人类确认？Agent 主动向人提问又是怎么实现的？两者为什么能共用一套基础设施？
+>> 危险操作（跑命令、改文件）如何在执行前弹给人类确认？Agent 主动向人提问又是怎么实现的？两者为什么能共用一套基础设施？
+>>
 >
 > **一句边界声明**：本节精讲**两组、共七个小文件**，它们分属两个看似不同、实则同构的功能——
 >
@@ -15,7 +16,7 @@
 >
 > ⚠️ **两处「留到后面」的诚实标注**：（1）`approval-persistence` 在本节**只定义契约**（两个函数类型），真正「落盘到 `~/.helixent`」的实现留到 [第 18 节](./00-roadmap.md)；（2）两个 `Manager` 都在「等一个 UI 来 `subscribe` 并 `respond`」，那个 React UI（`use-approval-manager` Hook、`approval-prompt` 组件等）是 [第 19 节](./00-roadmap.md) 的主角。本节聚焦「**Agent 侧如何产生请求、如何桥接、如何排队**」，把「UI 侧如何消费」留到第六部分。
 
-***
+---
 
 ## 0. 承上启下
 
@@ -36,7 +37,7 @@
 
 准备好了。我们先不看任何一个具体文件，而是先建立「**两个功能、两套接入、一套内核**」的全局地图——因为本节最容易让人迷路的地方，恰恰是「文件多而碎」。有了地图，再逐个击破。
 
-***
+---
 
 ## 1. 主题内容
 
@@ -156,10 +157,10 @@ export type ApprovalDecision = "deny" | "allow_once" | "allow_always_project";
 
 **这三个字面量值，是人机审批的「词汇表」，一个不多一个不少：**
 
-| 决定 | 含义 | 后果 |
-| --- | --- | --- |
-| `"deny"` | 拒绝这次执行 | 工具被短路跳过，返回一句「用户拒绝了」给模型（1.4） |
-| `"allow_once"` | 只允许这一次 | 本次放行，但下次同样的工具还会再问 |
+| 决定                       | 含义             | 后果                                                                             |
+| -------------------------- | ---------------- | -------------------------------------------------------------------------------- |
+| `"deny"`                 | 拒绝这次执行     | 工具被短路跳过，返回一句「用户拒绝了」给模型（1.4）                              |
+| `"allow_once"`           | 只允许这一次     | 本次放行，但下次同样的工具还会再问                                               |
 | `"allow_always_project"` | 本项目内永远允许 | 本次放行，且**持久化**进白名单，此后本项目内该工具免审批（1.4 的 persist） |
 
 **`allow_always_project` 是「记住我的选择」的 UX 落地**——它把「每次都问」降级成「问一次，此后放行」，是长时间使用时避免「审批疲劳」的关键。而它的「记住」需要一个地方存——这就引出第三个文件。
@@ -443,16 +444,16 @@ export function createAskUserQuestionTool(
 
 `ask_user_question` 工具里那个 `callback`，来自 [ask-user-question-manager.ts](../../src/coding/tools/ask-user-question-manager.ts)（58 行）。**它和 1.5 的 `ApprovalManager` 几乎是「复制粘贴 + 改名」**——这就是 1.1 说的第二个反直觉点，也是本节标题「**共享**的队列 + 单活跃 + 订阅」的字面兑现。我们**用一张对照表**快速带过，只标注差异：
 
-| 维度 | `ApprovalManager` | `AskUserQuestionManager` | 差异 |
-| --- | --- | --- | --- |
-| 请求类型 | `ApprovalRequest = { toolUse, resolve }` | `AskUserQuestionRequest = { params, resolve }` | 只是载荷不同（工具调用 vs 问题参数） |
-| 状态三件套 | `_queue` / `_currentRequest` / `_subscriber` | `_queue` / `_currentRequest` / `_subscriber` | **完全相同** |
-| 入队方法 | `askUser(toolUse)` | `askUserQuestion(params)` | 名字不同，逻辑相同 |
-| 队列溢出 | `resolve("deny")`（**兑现为拒绝**） | `reject(new Error(...))`（**抛错**） | ⚠️ **唯一实质差异**，见下 |
-| `_processQueue` | 逐行相同 | 逐行相同 | **完全相同** |
-| 响应方法 | `respond(decision)` | `respondWithAnswers(result)` | 名字不同，逻辑相同 |
-| `subscribe` | 逐行相同 | 逐行相同 | **完全相同** |
-| 全局单例 | `globalApprovalManager` | `globalAskUserQuestionManager` | 各有一个 |
+| 维度              | `ApprovalManager`                                | `AskUserQuestionManager`                         | 差异                                 |
+| ----------------- | -------------------------------------------------- | -------------------------------------------------- | ------------------------------------ |
+| 请求类型          | `ApprovalRequest = { toolUse, resolve }`         | `AskUserQuestionRequest = { params, resolve }`   | 只是载荷不同（工具调用 vs 问题参数） |
+| 状态三件套        | `_queue` / `_currentRequest` / `_subscriber` | `_queue` / `_currentRequest` / `_subscriber` | **完全相同**                   |
+| 入队方法          | `askUser(toolUse)`                               | `askUserQuestion(params)`                        | 名字不同，逻辑相同                   |
+| 队列溢出          | `resolve("deny")`（**兑现为拒绝**）        | `reject(new Error(...))`（**抛错**）       | ⚠️**唯一实质差异**，见下     |
+| `_processQueue` | 逐行相同                                           | 逐行相同                                           | **完全相同**                   |
+| 响应方法          | `respond(decision)`                              | `respondWithAnswers(result)`                     | 名字不同，逻辑相同                   |
+| `subscribe`     | 逐行相同                                           | 逐行相同                                           | **完全相同**                   |
+| 全局单例          | `globalApprovalManager`                          | `globalAskUserQuestionManager`                   | 各有一个                             |
 
 **看 `_processQueue` 有多像**（[ask-user-question-manager.ts L29-L39](../../src/coding/tools/ask-user-question-manager.ts#L29-L39)）——和 1.5 的那段几乎逐字符相同：
 
@@ -568,31 +569,23 @@ const agent = await createCodingAgent({
 
 **一句话总括本节主题**：**Helixent 把「审批拦截」和「主动提问」这两个功能，接入方式做成相反的两套（审批是第 7 节的中间件 + `beforeToolUse` 短路，对模型透明；提问是第 4 节的阻塞式工具，由模型主动调用），却让它们背后的两个 `Manager` 共享同一套「队列 + 单活跃 + 订阅 + 捕获 resolve」的内核——用「捕获 resolve」把异步 `await` 桥接到「未来某刻的人类响应」，用「队列 + 单活跃」把第 6 节并行工具带来的「并发请求」驯服成「一次一个的串行弹窗」，用「订阅」把「当前该弹谁」推给（第 19 节的）UI。审批和提问『功能对称、接入相反、内核同构』——这是本节最精巧的对称之美。**
 
-***
+---
 
 ## 2. 亮点与关键设计
 
 明确标注哪些是「妙笔」、哪些是「关键决策」：
 
 1. **【核心妙笔】「捕获 resolve」的 deferred 模式，把「等人类」变成一句朴素的 `await`。** `new Promise((resolve) => { queue.push({ ..., resolve }) })`——不立刻 resolve，而是把「让 await 继续的开关」存进队列，待人类响应时（`respond`）再按下。**这让「跨调用栈、跨时间的事件驱动交互」在上层表现为一个普通 Promise**，复杂性全被封装进 Manager。这是本节的总钥匙（1.2）。
-
 2. **【核心妙笔】两个 Manager 共享「队列 + 单活跃 + 订阅」内核，驯服第 6 节的并发请求。** `_queue`（接住并发涌入）+ `_currentRequest`（保证一次只弹一个）+ `_subscriber`（把「当前该弹谁」推给 UI）——把「并发进」精确转换成「串行出」。这是 roadmap 标题里那套模式的实现，也是它存在的根本理由（1.5）。
-
 3. **【关键决策】审批走中间件、提问走工具——功能相似，接入相反。** 审批是横切关注点，用 [第 7 节](./07-middleware.md) 的 `beforeToolUse` + `__skip` 短路**透明拦截**（模型不知情）；提问是模型的主动意图，用 [第 4 节](./04-tool.md) 的 `defineTool` 做成**可主动调用的工具**（模型显式发起）。**接入方式由「谁发起、对谁可见」决定**，而非由「功能长得像不像」决定（1.4/1.6，Q1 详解）。
-
 4. **【关键决策】审批用 `__skip` 短路做「拒绝」，Agent 核心零改动。** `deny` 时返回 `{ __skip: true, result }`，Agent 的 `_beforeToolUse` 检测到 `__skip` 就跳过 `tool.invoke`——危险操作**从未发生**。审批因此成为「插在第 7 节插座上的可插拔插件」（不传 `askUser` 就整个不挂），完美兑现第 7 节「一切扩展的插座」（1.4）。
-
 5. **【妙笔】`allow_always_project` + 持久化契约 = 治「审批疲劳」。** 三种决定里，`allow_always_project` 把「每次都问」降级为「问一次，此后放行」；而「记住」通过 `ApprovalPersistence` 契约（只定义 type、实现留第 18 节）实现「依赖倒置」——`coding` 层依赖抽象、`cli` 层注入实现，既可测又可复用（1.3）。
-
 6. **【妙笔】溢出兜底「同构却不同策」：审批 deny、提问 reject。** 两个 Manager 95% 相同，但队列溢出时——审批有安全默认（`resolve("deny")`，拒绝是安全的），提问无安全默认（`reject`，不能瞎编答案）。**机制复用、策略因地制宜**，是「同构不等于同一」的精准拿捏（1.7）。
-
 7. **【关键决策】人机交互是「注入的可选能力」，非硬编码。** `createCodingAgent` 里 `if (askUser)` 才挂审批中间件、`askUserQuestion ? ... : null` 才加提问工具——同一个 Agent 工厂既能做「交互式 TUI」，也能做「无人值守全自动」。**「是否有人在」成了一个运行时开关**（1.8）。
-
 8. **【妙笔】提问工具前后两次 abort 检查，严守第 5 节的贯穿式取消。** `await callback` 前后各查一次 `signal?.aborted`——前查「等之前就已取消，不必弹框」，后查「等的过程中被取消，答案作废」。**「最可能长时间阻塞的工具」上，取消语义守得最严**（1.6）。
-
 9. **【一致性红利】`subscribe` 返回 unsubscribe 函数，天然契合 React `useEffect`。** `subscribe` 的返回值是一个清空 `_subscriber` 的清理函数，第 19 节的 Hook 直接 `return manager.subscribe(...)` 即可让 React 在卸载时自动清理——**Manager 的 API 形状是「为 React 消费而设计」的**，跨层却严丝合缝（1.5）。
 
-***
+---
 
 ## 3. 工业对比
 
@@ -642,17 +635,17 @@ LangChain / LangGraph 有一套 Human-in-the-Loop 机制，核心是 `interrupt(
 
 ### 3.5 一览表
 
-| 维度 | Helixent | Claude Code | OpenAI Codex | LangGraph HITL |
-| --- | --- | --- | --- | --- |
-| 审批粒度 | 工具名 | 操作/命令模式 | 模式（三档） | 节点级 |
-| 拦截机制 | 中间件 + `__skip` 短路 | 权限层 | 模式判定 | `interrupt()` |
-| 「记住选择」 | `allow_always_project` 白名单 | allowedTools 多级配置 | 切模式 | checkpointer |
-| 提问机制 | 阻塞式工具（Promise 挂起） | 交互提示 | 交互提示 | `interrupt` + 状态快照 |
-| 跨进程恢复 | ❌（必须在线等） | ❌ | ❌ | ✅（有 checkpointer） |
-| 并发请求处理 | **队列 + 单活跃 + 订阅** | 内部管理 | 内部管理 | 图调度 |
-| 代码量 | **极小（七个小文件）** | 大 | 中 | 大（含状态基础设施） |
+| 维度         | Helixent                        | Claude Code           | OpenAI Codex | LangGraph HITL           |
+| ------------ | ------------------------------- | --------------------- | ------------ | ------------------------ |
+| 审批粒度     | 工具名                          | 操作/命令模式         | 模式（三档） | 节点级                   |
+| 拦截机制     | 中间件 +`__skip` 短路         | 权限层                | 模式判定     | `interrupt()`          |
+| 「记住选择」 | `allow_always_project` 白名单 | allowedTools 多级配置 | 切模式       | checkpointer             |
+| 提问机制     | 阻塞式工具（Promise 挂起）      | 交互提示              | 交互提示     | `interrupt` + 状态快照 |
+| 跨进程恢复   | ❌（必须在线等）                | ❌                    | ❌           | ✅（有 checkpointer）    |
+| 并发请求处理 | **队列 + 单活跃 + 订阅**  | 内部管理              | 内部管理     | 图调度                   |
+| 代码量       | **极小（七个小文件）**    | 大                    | 中           | 大（含状态基础设施）     |
 
-***
+---
 
 ## 4. 深度解释：为什么这样设计？不这样会怎样？
 
@@ -664,12 +657,12 @@ LangChain / LangGraph 有一套 Human-in-the-Loop 机制，核心是 `interrupt(
 
 先厘清两者的本质区别（这是本节最需要想透的一点）：
 
-| | 审批（Approval） | 提问（Ask） |
-| --- | --- | --- |
-| **谁发起** | **Agent 框架**（模型没主动要） | **模型**（主动决定要问） |
-| **对模型可见吗** | **不可见**（模型不知道有审批） | **可见**（是工具列表里的一项） |
-| **拦截的对象** | 模型**已经想做**的危险操作 | 无（提问本身就是模型想做的） |
-| **典型触发** | 模型调 `bash rm` → 被审批拦住 | 模型遇到歧义 → 主动调 `ask_user_question` |
+|                        | 审批（Approval）                     | 提问（Ask）                                 |
+| ---------------------- | ------------------------------------ | ------------------------------------------- |
+| **谁发起**       | **Agent 框架**（模型没主动要） | **模型**（主动决定要问）              |
+| **对模型可见吗** | **不可见**（模型不知道有审批） | **可见**（是工具列表里的一项）        |
+| **拦截的对象**   | 模型**已经想做**的危险操作     | 无（提问本身就是模型想做的）                |
+| **典型触发**     | 模型调`bash rm` → 被审批拦住      | 模型遇到歧义 → 主动调`ask_user_question` |
 
 **看清这个区别，接入方式就是「被逼出来的」，而非随意选的：**
 
@@ -702,9 +695,7 @@ LangChain / LangGraph 有一套 Human-in-the-Loop 机制，核心是 `interrupt(
 **但这恰恰是提问『应该有』的语义**，三个理由：
 
 1. **提问的目的就是「等答案再继续」。** 模型问「你想用 TypeScript 还是 Python？」——它**必须**拿到答案才能决定下一步写什么代码。如果不阻塞、Agent 继续往下跑，模型就得在「不知道答案」的情况下瞎猜，**那提问就毫无意义了**。**「阻塞直到有答案」是提问的本质，不是缺陷。**
-
 2. **它不是「死锁」，而是「有意的等待」。** 「假死」通常指「程序卡住且无法恢复」。但这里的等待**有明确的唤醒条件**（人类回答）和**明确的取消出口**（[第 5 节](./05-react-loop.md) 的 `AbortController`——用户按 Ctrl+C，`signal.aborted` 变 true，1.6 的两次 abort 检查会抛 `AbortError` 让工具立刻返回）。**「可被唤醒、可被取消的等待」不是假死。**
-
 3. **交互式 CLI 场景下，「等人」本就是常态。** 用户就坐在终端前，Agent 问了个问题、等他回答——这段「等待」在用户看来是**完全自然的**（就像和人对话时等对方回答）。**只有在「无人值守的自动化」场景下，「阻塞等人」才是问题——而那种场景根本不会启用 `ask_user_question`**（1.8：不传 `askUserQuestion` 回调，工具就不挂）。
 
 **「不这样（不阻塞）会怎样」**：如果 `ask_user_question` 不阻塞、立刻返回一个「占位答案」，模型就会基于假答案继续，产出错误的结果，然后人类的真实回答来了也没用了——**整个「提问」沦为摆设**。**所以「阻塞」是提问能发挥作用的前提，而第 5 节的取消机制保证了这个阻塞『可控、可逃生』——两者配合，既让提问有意义，又不会真的把 Agent 锁死。**
@@ -717,12 +708,12 @@ LangChain / LangGraph 有一套 Human-in-the-Loop 机制，核心是 `interrupt(
 
 **给一套可操作的判断清单**（用它审视本节）：
 
-| 判断维度 | 倾向「抽象」 | 倾向「保留重复」 | 本节情况 |
-| --- | --- | --- | --- |
-| **实例数量** | 多（3+，且预计还会增加） | 少（就 2 个，且不太会增加） | 2 个，不太会增（→ 不抽） |
-| **是否同一知识** | 是（改一处必改所有处） | 否（各自会独立演化） | 溢出策略已分化（deny/reject）（→ 不抽） |
-| **抽象后可读性** | 提升 | 下降（领域名被泛化冲淡） | `askUser` 比 `enqueue` 达意（→ 不抽） |
-| **差异的处理成本** | 差异少、易参数化 | 差异需要额外钩子/分支 | 溢出差异需定制钩子（→ 不抽） |
+| 判断维度                 | 倾向「抽象」             | 倾向「保留重复」            | 本节情况                                   |
+| ------------------------ | ------------------------ | --------------------------- | ------------------------------------------ |
+| **实例数量**       | 多（3+，且预计还会增加） | 少（就 2 个，且不太会增加） | 2 个，不太会增（→ 不抽）                  |
+| **是否同一知识**   | 是（改一处必改所有处）   | 否（各自会独立演化）        | 溢出策略已分化（deny/reject）（→ 不抽）   |
+| **抽象后可读性**   | 提升                     | 下降（领域名被泛化冲淡）    | `askUser` 比 `enqueue` 达意（→ 不抽） |
+| **差异的处理成本** | 差异少、易参数化         | 差异需要额外钩子/分支       | 溢出差异需定制钩子（→ 不抽）              |
 
 **本节四个维度全部指向「不抽」**：只有 2 个实例、溢出策略已经分化（证明它们是「两个知识」而非「一个知识」）、抽象会让 `askUser`/`respond` 退化成泛型的 `enqueue`/`resolve`（可读性下降）、差异（deny vs reject）需要基类开钩子（复杂度反噬）。**所以「保留两份 95% 相似的代码」是这里的正确选择。**
 
@@ -737,20 +728,19 @@ LangChain / LangGraph 有一套 Human-in-the-Loop 机制，核心是 `interrupt(
 **单独成文件的三个价值：**
 
 1. **让契约「可被独立引用」。** [lead-agent.ts](../../src/coding/agents/lead-agent.ts) 和 [cli/index.tsx](../../src/cli/index.tsx) 都要引用 `ApprovalPersistence`（一个定义参数类型、一个提供实现）。放在独立文件里，双方 `import { ApprovalPersistence } from ".../approval-persistence"`——**契约有了一个明确的「单一来源」**。若内联进中间件，别人就得从 `coding-approval-middleware` 里 import 一个「持久化契约」，语义上很别扭（为什么持久化契约要从「中间件」文件里拿？）。
-
 2. **让「依赖倒置」这件事『看得见』。** 这个文件的存在本身就在宣告：「**`coding` 层需要一个持久化能力，但拒绝自己实现它，而是定义一个契约、等外层注入**」。一个专门的 `approval-persistence.ts` 文件，比「藏在中间件里的一个 type」**更能表达这个架构意图**——读代码的人一看目录就知道「哦，持久化是一个被抽象出去的、待注入的关注点」。
-
 3. **符合「一个文件一个关注点」的项目气质。** 回看 1.1，审批一侧的文件都极小且单一职责：`requires-approval`（名单）、`approval-types`（决定）、`approval-persistence`（持久化契约）、`coding-approval-middleware`（拦截逻辑）、`approval-manager`（调度）。**每个文件回答一个问题**。把持久化契约塞进中间件，会让中间件同时承担「拦截逻辑」和「持久化契约定义」两个关注点——**违背了这种「小而单一」的一致性**。
 
 **「不这样会怎样」**：短期看没差别（能跑）。但长期看，**架构边界会变得模糊**——当项目变大、有人想「换一种持久化实现」或「给持久化契约加个方法」时，他得先在中间件文件里「考古」找到那个内联的 type，改动的影响范围也不清晰。**把 6 行的契约单独成文件，是用『一点点文件数量的增加』换取『架构边界的清晰与显式』——这在一个以「分层干净」为卖点的项目里，是完全值得的。** 这也呼应了 [第 1 节](./01-overview.md) 反复强调的「严格单向依赖」：`approval-persistence.ts` 就是那条「`coding` 不依赖 `cli`、只依赖抽象」的边界的物理体现。
 
-***
+---
 
 ## 5. 参考资料
 
 **本节精讲的源码（七个文件）**：
 
 审批一侧（`src/coding/permissions/`）：
+
 - [requires-approval.ts](../../src/coding/permissions/requires-approval.ts)（9 行）——`CODING_TOOLS_REQUIRING_APPROVAL` 必审批名单
 - [approval-types.ts](../../src/coding/permissions/approval-types.ts)（1 行）——`ApprovalDecision` 三种决定
 - [approval-persistence.ts](../../src/coding/permissions/approval-persistence.ts)（6 行）——白名单读写契约（实现留第 18 节）
@@ -764,6 +754,7 @@ LangChain / LangGraph 有一套 Human-in-the-Loop 机制，核心是 `interrupt(
 - [permissions/index.ts](../../src/coding/permissions/index.ts)——桶文件导出
 
 提问一侧（`src/coding/tools/`）：
+
 - [ask-user-question.ts](../../src/coding/tools/ask-user-question.ts)（126 行）——阻塞式工具、Zod schema、答案校验
   - 数据类型 `AskUserQuestionOption`/`Item`/`Parameters`/`Result`：[L8-L39](../../src/coding/tools/ask-user-question.ts#L8-L39)
   - Zod schema（约束 2-4 选项、1-4 问题、header≤12）：[L41-L72](../../src/coding/tools/ask-user-question.ts#L41-L72)
@@ -772,6 +763,7 @@ LangChain / LangGraph 有一套 Human-in-the-Loop 机制，核心是 `interrupt(
 - [ask-user-question-manager.ts](../../src/coding/tools/ask-user-question-manager.ts)（58 行）——共享内核的孪生（溢出 reject 是唯一差异）
 
 **co-located 测试（[第 21 节](./00-roadmap.md) 会讲这套约定）**：
+
 - [approval-manager.test.ts](../../src/coding/permissions/__tests__/approval-manager.test.ts)——入队/订阅/串行处理/队列清空/unsubscribe
 - [coding-approval-middleware.test.ts](../../src/coding/permissions/__tests__/coding-approval-middleware.test.ts)——名单放行/白名单跳过/deny 短路/持久化/持久化失败不抛
 - [requires-approval.test.ts](../../src/coding/permissions/__tests__/requires-approval.test.ts)——名单内容/非空/无重复
@@ -779,6 +771,7 @@ LangChain / LangGraph 有一套 Human-in-the-Loop 机制，核心是 `interrupt(
 - [ask-user-question-manager.test.ts](../../src/coding/tools/__tests__/ask-user-question-manager.test.ts)——FIFO 顺序/订阅通知
 
 **上游依赖章节**：
+
 - [第 7 节 · Middleware 中间件系统](./07-middleware.md)：`beforeToolUse` 钩子与 `{ __skip: true, result }` 短路协议（审批拦截的机制根基）、「中间件是一切扩展的插座」
 - [第 6 节 · 并行工具调度](./06-parallel-tools.md)：并行工具带来「同时多个审批请求」的矛盾（队列 + 单活跃存在的根本原因）
 - [第 5 节 · ReAct 主循环](./05-react-loop.md)：`AbortController` 贯穿式取消（提问工具前后两次 abort 检查、阻塞可逃生的保证）
@@ -786,24 +779,27 @@ LangChain / LangGraph 有一套 Human-in-the-Loop 机制，核心是 `interrupt(
 - [第 11 节 · Lead Agent](./11-lead-agent.md)：`createCodingAgent` 如何按需装配审批中间件与提问工具、`CODING_TOOLS_REQUIRING_APPROVAL` 的传入
 
 **下游承接章节（本节埋的接口）**：
+
 - [第 18 节 · CLI 入口、配置与设置持久化](./00-roadmap.md)：`ApprovalPersistence` 契约的落地实现（`SettingsLoader`/`SettingsWriter` + `appendToolToAllowList` 读写 `~/.helixent`）
 - [第 19 节 · TUI 架构与状态编排](./00-roadmap.md)：`use-approval-manager`/`use-ask-user-question-manager` Hook 如何 `subscribe` 两个 Manager，把「单活跃请求」渲染成 React 弹窗（`approval-prompt`/`ask-user-question-prompt` 组件）
 
 **关联源码（本节引用但不精讲）**：
+
 - Agent 核心的短路分发：[agent.ts `_act` L221-L238](../../src/agent/agent.ts#L221-L238)、[`_beforeToolUse` L337-L349](../../src/agent/agent.ts#L337-L349)
 - 装配处：[lead-agent.ts L62-L119](../../src/coding/agents/lead-agent.ts#L62-L119)
 - 全局单例接线：[cli/index.tsx L74-L83](../../src/cli/index.tsx#L74-L83)
 - 桶文件导出：[coding/index.ts](../../src/coding/index.ts)
 
 **外部资料**：
-- JavaScript Promise「deferred / 捕获 resolve」模式（MDN Promise 构造器）：<https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise/Promise>
-- Sandi Metz「The Wrong Abstraction」（「错误的抽象比重复更昂贵」，Q4 的理论依据）：<https://sandimetz.com/blog/2016/1/20/the-wrong-abstraction>
-- Claude Code 权限系统文档（3.1 对比）：<https://docs.anthropic.com/en/docs/claude-code/security>
-- OpenAI Codex CLI 的审批模式（3.2 对比）：<https://github.com/openai/codex>
-- LangGraph Human-in-the-Loop 与 `interrupt`（3.3 对比）：<https://langchain-ai.github.io/langgraph/concepts/human_in_the_loop/>
-- 依赖倒置原则（DIP，`approval-persistence` 契约的理论基础）：<https://en.wikipedia.org/wiki/Dependency_inversion_principle>
 
-***
+- JavaScript Promise「deferred / 捕获 resolve」模式（MDN Promise 构造器）：[https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise/Promise](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise/Promise)
+- Sandi Metz「The Wrong Abstraction」（「错误的抽象比重复更昂贵」，Q4 的理论依据）：[https://sandimetz.com/blog/2016/1/20/the-wrong-abstraction](https://sandimetz.com/blog/2016/1/20/the-wrong-abstraction)
+- Claude Code 权限系统文档（3.1 对比）：[https://docs.anthropic.com/en/docs/claude-code/security](https://docs.anthropic.com/en/docs/claude-code/security)
+- OpenAI Codex CLI 的审批模式（3.2 对比）：[https://github.com/openai/codex](https://github.com/openai/codex)
+- LangGraph Human-in-the-Loop 与 `interrupt`（3.3 对比）：[https://langchain-ai.github.io/langgraph/concepts/human_in_the_loop/](https://langchain-ai.github.io/langgraph/concepts/human_in_the_loop/)
+- 依赖倒置原则（DIP，`approval-persistence` 契约的理论基础）：[https://en.wikipedia.org/wiki/Dependency_inversion_principle](https://en.wikipedia.org/wiki/Dependency_inversion_principle)
+
+---
 
 ## 6. 小结与下一节预告
 

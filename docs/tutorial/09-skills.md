@@ -4,11 +4,12 @@
 >
 > 对应 roadmap 为本节设定的**核心问题**：
 >
-> > 如何让 Agent「按需」学会一套专门技能，而不是把所有说明书一次性塞进 prompt？
+>> 如何让 Agent「按需」学会一套专门技能，而不是把所有说明书一次性塞进 prompt？
+>>
 >
 > **一句边界声明**：本节精讲**四个文件**——技能中间件 [skills-middleware.ts](../../src/agent/skills/skills-middleware.ts)（117 行，是绝对主角）、frontmatter 读取器 [skill-reader.ts](../../src/agent/skills/skill-reader.ts)（13 行）、给 CLI 用的技能枚举器 [list-skills.ts](../../src/agent/skills/list-skills.ts)（41 行）、以及只有 5 行的类型定义 [types/index.ts](../../src/agent/skills/types/index.ts)。加起来不到 180 行代码，外加对两个**真实技能样例** [coding-plan/SKILL.md](../../skills/coding-plan/SKILL.md)、[deep-research-plan/SKILL.md](../../skills/deep-research-plan/SKILL.md) 的解读。至于**中间件分发机制**是 [第 7 节](./07-middleware.md) 的主题（本节直接用它的结论）、**技能正文靠哪个工具读进来**（`read_file`）是 [第 12 节](./00-roadmap.md) 的主题、**斜杠命令的输入框/补全**是 [第 20 节](./00-roadmap.md) 的主题——本节只负责「技能如何被发现、如何以最省 token 的方式注入、以及如何被显式/隐式触发」这条主线。
 
-***
+---
 
 ## 0. 承上启下
 
@@ -28,7 +29,7 @@
 
 打开这四个文件，我们开始拆。
 
-***
+---
 
 ## 1. 主题内容
 
@@ -79,11 +80,11 @@ export interface SkillFrontmatter {
 
 这三个字段，正好对应上面说的「第一层：目录条目」：
 
-| 字段 | 含义 | 谁产生 |
-| --- | --- | --- |
-| `name` | 技能名（也是斜杠命令名，如 `coding-plan`） | 来自 SKILL.md 的 YAML frontmatter |
-| `description` | 一句（其实往往是一大段）描述「这个技能是干什么的、什么时候该用」 | 来自 frontmatter |
-| `path` | 该技能 `SKILL.md` 的**绝对路径**，即"正文在哪" | 由代码在读取时**补上**（不是 frontmatter 里写的） |
+| 字段            | 含义                                                             | 谁产生                                                  |
+| --------------- | ---------------------------------------------------------------- | ------------------------------------------------------- |
+| `name`        | 技能名（也是斜杠命令名，如`coding-plan`）                      | 来自 SKILL.md 的 YAML frontmatter                       |
+| `description` | 一句（其实往往是一大段）描述「这个技能是干什么的、什么时候该用」 | 来自 frontmatter                                        |
+| `path`        | 该技能`SKILL.md` 的**绝对路径**，即"正文在哪"            | 由代码在读取时**补上**（不是 frontmatter 里写的） |
 
 这个格式**刻意对标 [agentskills.io](https://agentskills.io/) 标准**（也就是 Anthropic 在 2025 年推广的 "Agent Skills" 约定）：一个技能 = 一个文件夹，里面有一个 `SKILL.md`，`SKILL.md` = **YAML frontmatter（元数据）+ Markdown 正文（说明书）**，正文旁边可以放任意辅助资源文件。frontmatter 就是"目录条目"，正文就是"章节内容"，同目录的其他文件就是"附录"。
 
@@ -124,6 +125,7 @@ export async function readSkillFrontMatter(path: string): Promise<SkillFrontmatt
   # Plan Mode
   正文...
   ```
+
   的文件，拆成 `{ data: { name, description }, content: "# Plan Mode\n正文..." }`。本函数只取 `data`（frontmatter），**正文 `content` 直接丢弃**——这正是渐进式披露的体现：**读目录条目的这一步，压根不关心正文。**
 - **`{ ...parsedFile.data, path }`（妙笔）**：把 gray-matter 解析出的 `data`（一个松散的 `{ [key]: any }`）展开，**再补上一个我们自己拼的 `path`**。为什么 `path` 要代码补、而不是让 SKILL.md 在 frontmatter 里自己写？因为**路径是"这个文件在磁盘的哪"，只有读它的代码知道**——让 SKILL.md 自己写路径既冗余又容易和实际位置不一致。`data` 里的字段是"作者声明的"（不可靠、可能缺失），`path` 是"运行时观测的"（可靠、一定正确）。这个「**松散数据 + 可靠补丁**」的合并模式，很值得记住。
 - **`as SkillFrontmatter`**：类型断言。因为 `data` 是 `any`，这里用断言"承诺"它符合接口。
@@ -207,10 +209,10 @@ beforeAgentRun: async () => {
 
 用一张表说清「什么会被去重、什么不会」：
 
-| 场景 | `skillsDirs` | 结果 |
-| --- | --- | --- |
-| 别名指向同一目录 | `["/a/skills", "/a/skills"]` 里都有 `foo/SKILL.md` | **去重**——同一个路径 `/a/skills/foo/SKILL.md`，只留一个 |
-| 两个不同目录有同名技能 | `["/a/skills", "/b/skills"]` 各有 `foo/SKILL.md` | **不去重**——`/a/.../foo/SKILL.md` 和 `/b/.../foo/SKILL.md` 是两个路径，**都保留**，于是 prompt 里会出现两个 `name="foo"` |
+| 场景                   | `skillsDirs`                                         | 结果                                                                                                                                         |
+| ---------------------- | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| 别名指向同一目录       | `["/a/skills", "/a/skills"]` 里都有 `foo/SKILL.md` | **去重**——同一个路径 `/a/skills/foo/SKILL.md`，只留一个                                                                            |
+| 两个不同目录有同名技能 | `["/a/skills", "/b/skills"]` 各有 `foo/SKILL.md`   | **不去重**——`/a/.../foo/SKILL.md` 和 `/b/.../foo/SKILL.md` 是两个路径，**都保留**，于是 prompt 里会出现两个 `name="foo"` |
 
 **换句话说：去重的粒度是"物理文件"，不是"逻辑技能名"。** 这个决策的深层原因（为什么不做"同名覆盖"）放到 [第 4 部分 Q1](#4-深度解释为什么这样设计不这样会怎样)。
 
@@ -357,11 +359,11 @@ for (let skillsDir of skillsDirs) {            for (let skillsDir of skillsDirs)
 
 **这两段几乎逐行相同。** 为什么明知重复还各写一份？关键在**消费者不同、时机不同**：
 
-| | `beforeAgentRun`（中间件里） | `listSkills`（独立函数） |
-| --- | --- | --- |
-| **消费者** | **模型**——结果注入 prompt，供模型"按需读正文" | **用户/UI**——结果变成斜杠命令，供用户点选 + `/help` 展示 |
-| **触发时机** | 每次 `agent.stream()` 的 `beforeAgentRun` | CLI **启动时**调一次 [cli/index.tsx](../../src/cli/index.tsx#L83) |
-| **依赖方向** | 在 agent 层内部 | 被 cli 层 import（[command-registry.ts](../../src/cli/tui/command-registry.ts#L1)） |
+|                    | `beforeAgentRun`（中间件里）                        | `listSkills`（独立函数）                                                         |
+| ------------------ | ----------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| **消费者**   | **模型**——结果注入 prompt，供模型"按需读正文" | **用户/UI**——结果变成斜杠命令，供用户点选 + `/help` 展示                 |
+| **触发时机** | 每次`agent.stream()` 的 `beforeAgentRun`          | CLI**启动时**调一次 [cli/index.tsx](../../src/cli/index.tsx#L83)              |
+| **依赖方向** | 在 agent 层内部                                       | 被 cli 层 import（[command-registry.ts](../../src/cli/tui/command-registry.ts#L1)） |
 
 客观地说，**这是一处"本可以 DRY 但选择不 DRY"的重复**：中间件的 `beforeAgentRun` 完全可以直接调 `listSkills(skillsDirs)`，逻辑一模一样。项目没这么做，我理解是权衡后的务实选择（两段都只 ~30 行、各自独立演化不互相牵连），但它确实是本节唯一一个"能消除的重复"。这一点的利弊，[第 4 部分 Q4](#4-深度解释为什么这样设计不这样会怎样) 会摆开讲——我不替设计者粉饰，也不夸大。
 
@@ -390,31 +392,23 @@ for (let skillsDir of skillsDirs) {            for (let skillsDir of skillsDirs)
 
 **一句话总括**：**发现只读目录条目、注入只放目录条目、正文永远躺在磁盘上等模型用 `read_file` 按需取——上下文里永远只有"薄薄一层目录"，这就是渐进式披露。**
 
-***
+---
 
 ## 2. 亮点与关键设计
 
 明确标注哪些是「妙笔」、哪些是「关键决策」：
 
 1. **【核心妙笔】渐进式披露：目录常驻、正文按需、零新增加载机制。** 只把 `{name, description, path}` 注入 prompt，正文让模型用**它本就拥有的 `read_file`** 去读。既省 token（薄目录 vs 全量说明书），又"免费"（不需要新的检索/加载子系统）。这是整节的灵魂。
-
 2. **【关键决策】`description` 即"路由信息"。** 把"何时该用这个技能"的判断权交给模型，而判断的依据就是 description。所以真实技能的 description 会**刻意枚举大量触发短语**（[coding-plan/SKILL.md](../../skills/coding-plan/SKILL.md#L3)）——description 的丰富度直接决定触发准确率。
-
 3. **【关键决策】注入 `modelContext.prompt` 而非 `agentContext.prompt`——每步重注入但绝不累积。** 借力第 7 节"持久上下文 / 每步临时上下文"的分家，一行 `modelContext.prompt + skillsXML` 就同时拿到"模型每步都记得有哪些技能"和"prompt 不雪崩"两个好处（1.5 关键点 B）。
-
 4. **【关键决策】两个钩子按数据生命周期分工。** 昂贵且整轮不变的"发现"放 `beforeAgentRun`（一次）；廉价但载体每步重建的"注入"放 `beforeModel`（每步）。教科书级的钩子选型（1.5 关键点 C）。
-
 5. **【妙笔】`{ ...parsedFile.data, path }`——松散数据 + 可靠补丁。** frontmatter 字段是"作者声明的"（可缺失），`path` 是"运行时观测的"（一定对），二者合并成可靠的 `SkillFrontmatter`（1.3）。
-
 6. **【关键决策】按物理路径去重，不做"同名覆盖"。** 去重粒度是文件而非逻辑名，让多目录分层的语义保持简单（"每个文件就是一个技能"），代价是同名技能会并存（1.4、Q1）。
-
 7. **【关键决策】显式 + 隐式双触发。** 隐式靠 description 概率匹配、显式靠斜杠命令确定兜底，共用同一套注入机制（1.6）。
-
 8. **【关键决策】宽容发现。** 目录不存在/读不动/无 `SKILL.md` 一律 `continue` 不 `throw`，保证"技能缺失绝不拖垮 Agent 启动"（1.4）。
-
 9. **【对标标准】格式贴合 [agentskills.io](https://agentskills.io/)。** `SKILL.md = frontmatter + 正文 + 同目录资源`，一个文件夹一个技能——直接复用社区已成型的约定，用户从 Claude Code 等工具迁移技能几乎零成本。
 
-***
+---
 
 ## 3. 工业对比
 
@@ -450,15 +444,15 @@ LangChain 生态里没有直接对应"skill"的概念。想实现类似效果，
 
 ### 3.5 一览表
 
-| 方案 | 加载模式 | 是否分层披露 | 基础设施成本 | 触发方式 |
-| --- | --- | --- | --- | --- |
-| **Helixent Skills** | 目录常驻 + 按需 `read_file` 读全文 | ✅ 是（核心卖点） | 极低（复用文件读取） | description 隐式 + 斜杠命令显式 |
-| Claude Code Agent Skills | 同上（标准出处） | ✅ 是 | 低~中（含打包分发） | 类似 |
-| Cursor Rules | 无条件 / glob 匹配注入 | ⚠️ 部分 | 低 | 文件类型自动 |
-| LangChain + RAG | 向量检索片段注入 | ⚠️ 检索式 | 高（向量库 + embedding） | 相似度 |
-| GPTs / Custom Instructions | 全量注入 | ❌ 否 | 低 | 无条件 |
+| 方案                       | 加载模式                            | 是否分层披露      | 基础设施成本             | 触发方式                        |
+| -------------------------- | ----------------------------------- | ----------------- | ------------------------ | ------------------------------- |
+| **Helixent Skills**  | 目录常驻 + 按需`read_file` 读全文 | ✅ 是（核心卖点） | 极低（复用文件读取）     | description 隐式 + 斜杠命令显式 |
+| Claude Code Agent Skills   | 同上（标准出处）                    | ✅ 是             | 低~中（含打包分发）      | 类似                            |
+| Cursor Rules               | 无条件 / glob 匹配注入              | ⚠️ 部分         | 低                       | 文件类型自动                    |
+| LangChain + RAG            | 向量检索片段注入                    | ⚠️ 检索式       | 高（向量库 + embedding） | 相似度                          |
+| GPTs / Custom Instructions | 全量注入                            | ❌ 否             | 低                       | 无条件                          |
 
-***
+---
 
 ## 4. 深度解释：为什么这样设计？不这样会怎样？
 
@@ -504,11 +498,12 @@ LangChain 生态里没有直接对应"skill"的概念。想实现类似效果，
 
 但本质上，**只要正文不在 prompt 里，就没有 100% 的加载保证**——这是"省 token"必然付出的代价。对比"全量注入"方案：它 100% 保证模型看到了正文，但代价是 100% 烧掉了所有技能的 token。**渐进式披露选择了"用一点点'可能不读'的风险，换取巨大的 token 节省"**，对 Coding Agent 这种"大部分任务用不到大部分技能"的场景，这笔交易非常划算。真要 100% 保证某技能生效？——那就用显式斜杠命令。
 
-***
+---
 
 ## 5. 参考资料
 
 **本节精讲的源码（四个主角 + 样例）**：
+
 - 技能中间件（绝对主角）：[skills-middleware.ts](../../src/agent/skills/skills-middleware.ts)（发现 [beforeAgentRun](../../src/agent/skills/skills-middleware.ts#L34-L68)、注入 [beforeModel](../../src/agent/skills/skills-middleware.ts#L70-L115)、去重策略注释 [L11-L31](../../src/agent/skills/skills-middleware.ts#L11-L31)）
 - frontmatter 读取器：[skill-reader.ts](../../src/agent/skills/skill-reader.ts)
 - 给 CLI 用的技能枚举器：[list-skills.ts](../../src/agent/skills/list-skills.ts)
@@ -516,6 +511,7 @@ LangChain 生态里没有直接对应"skill"的概念。想实现类似效果，
 - 真实技能样例：[coding-plan/SKILL.md](../../skills/coding-plan/SKILL.md)、[deep-research-plan/SKILL.md](../../skills/deep-research-plan/SKILL.md)
 
 **装配与调用链**：
+
 - 库默认装配：[lead-agent.ts](../../src/coding/agents/lead-agent.ts#L34)（`skillsDirs` 默认值）、[L66](../../src/coding/agents/lead-agent.ts#L66)（把 `createSkillsMiddleware` 装进中间件数组）
 - CLI 扩充技能来源：[cli/index.tsx](../../src/cli/index.tsx#L63-L69)（5 个目录）、[L83](../../src/cli/index.tsx#L83)（`loadAvailableCommands`）
 - 显式触发链路：[command-registry.ts](../../src/cli/tui/command-registry.ts#L139-L163)（`buildPromptSubmission`）、[use-agent-loop.ts](../../src/cli/tui/hooks/use-agent-loop.ts#L83-L122)（`setRequestedSkillName`）
@@ -523,20 +519,23 @@ LangChain 生态里没有直接对应"skill"的概念。想实现类似效果，
 - 正文加载工具（第 12 节精讲）：[read-file.ts](../../src/coding/tools/read-file.ts)
 
 **测试（可作为"可执行的规格说明"对照阅读）**：
+
 - [skills.test.ts](../../src/agent/__tests__/skills.test.ts)（`readSkillFrontMatter` 的"无 frontmatter 不报错" [L43-L50](../../src/agent/__tests__/skills.test.ts#L43-L50)、`listSkills` 的发现/跳过/去重行为 [L53-L105](../../src/agent/__tests__/skills.test.ts#L53-L105)）
 
 **上游依赖章节**：
+
 - [第 4 节 · Tool 工具系统](./04-tool.md)（`read_file` 是 `defineTool` 定义的工具）
 - [第 7 节 · Middleware 中间件系统](./07-middleware.md)（`beforeAgentRun`/`beforeModel` 钩子、`Object.assign` 合并协议、`AgentContext` vs `ModelContext` 分家）
 - [第 8 节 · 工具结果处理管线](./08-tool-result-pipeline.md)（同源的"上下文是稀缺资源"焦虑、容错哲学）
 
 **外部资料**：
-- Anthropic Engineering · "Agent Skills" 与 progressive disclosure（本节格式的直接来源）：<https://www.anthropic.com/engineering>
-- agentskills.io（`SKILL.md` 社区约定）：<https://agentskills.io/>
-- gray-matter（frontmatter 解析库）：<https://github.com/jonschlinkert/gray-matter>
-- YAML frontmatter 约定：<https://jekyllrb.com/docs/front-matter/>
 
-***
+- Anthropic Engineering · "Agent Skills" 与 progressive disclosure（本节格式的直接来源）：[https://www.anthropic.com/engineering](https://www.anthropic.com/engineering)
+- agentskills.io（`SKILL.md` 社区约定）：[https://agentskills.io/](https://agentskills.io/)
+- gray-matter（frontmatter 解析库）：[https://github.com/jonschlinkert/gray-matter](https://github.com/jonschlinkert/gray-matter)
+- YAML frontmatter 约定：[https://jekyllrb.com/docs/front-matter/](https://jekyllrb.com/docs/front-matter/)
+
+---
 
 ## 6. 小结与下一节预告
 

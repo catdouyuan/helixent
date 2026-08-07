@@ -4,11 +4,12 @@
 >
 > 对应 roadmap 为本节设定的**核心问题**：
 >
-> > 这些「探索环境」的工具分别解决什么问题？为什么 `bash` 要这样处理输出和中断？
+>> 这些「探索环境」的工具分别解决什么问题？为什么 `bash` 要这样处理输出和中断？
+>>
 >
 > **一句边界声明**：本节精讲 **7 个工具文件**——万能逃生舱 [bash.ts](../../src/coding/tools/bash.ts)（36 行），三个「搜索/浏览」工具 [glob-search.ts](../../src/coding/tools/glob-search.ts)、[grep-search.ts](../../src/coding/tools/grep-search.ts)、[list-files.ts](../../src/coding/tools/list-files.ts)，以及三个「元信息/系统操作」工具 [file-info.ts](../../src/coding/tools/file-info.ts)、[mkdir.ts](../../src/coding/tools/mkdir.ts)、[move-path.ts](../../src/coding/tools/move-path.ts)。它们全都**站在第 12 节的地基之上**（调 `ensureDirectoryPath`/`ensureAbsolutePath`、用 `truncateText`、返 `okToolResult`/`errorToolResult`），所以**本节必须在第 12 节之后读**。`bash` 与 `grep_search` 还会呼应 [第 5/6 节](./05-react-loop.md) 的 `AbortController`——这是本节两处独有的「可中断子进程」设计。
 
-***
+---
 
 ## 0. 承上启下
 
@@ -34,7 +35,7 @@
 
 准备好了，我们先从这批工具里**最特殊、也最危险**的那把「万能钥匙」`bash` 开始。
 
-***
+---
 
 ## 1. 主题内容
 
@@ -42,11 +43,11 @@
 
 写代码前先建立地图。这 7 个工具不是随机堆在一起的，按「解决什么问题」可以分成三组：
 
-| 组别 | 工具 | 解决的问题 | 站在哪块地基上 | 需要 `signal`？ |
-| --- | --- | --- | --- | --- |
-| **A. 万能逃生舱** | `bash` | 前六个工具覆盖不到的一切（跑测试、`git`、`ls -la`…） | 无（直接 `Bun.spawn`） | ✅ 要 |
-| **B. 搜索 / 浏览** | `glob_search`、`grep_search`、`list_files` | 「有哪些文件 / 哪个文件含某内容 / 目录长啥样」 | `ensureDirectoryPath` + `truncateText` | `grep` ✅ / 另两个 ❌ |
-| **C. 元信息 / 系统操作** | `file_info`、`mkdir`、`move_path` | 「这个路径是啥 / 建目录 / 移动重命名」 | `ensureAbsolutePath` | ❌ |
+| 组别                           | 工具                                             | 解决的问题                                                | 站在哪块地基上                             | 需要`signal`？        |
+| ------------------------------ | ------------------------------------------------ | --------------------------------------------------------- | ------------------------------------------ | ----------------------- |
+| **A. 万能逃生舱**        | `bash`                                         | 前六个工具覆盖不到的一切（跑测试、`git`、`ls -la`…） | 无（直接`Bun.spawn`）                    | ✅ 要                   |
+| **B. 搜索 / 浏览**       | `glob_search`、`grep_search`、`list_files` | 「有哪些文件 / 哪个文件含某内容 / 目录长啥样」            | `ensureDirectoryPath` + `truncateText` | `grep` ✅ / 另两个 ❌ |
+| **C. 元信息 / 系统操作** | `file_info`、`mkdir`、`move_path`          | 「这个路径是啥 / 建目录 / 移动重命名」                    | `ensureAbsolutePath`                     | ❌                      |
 
 **三组的气质差异很关键：**
 
@@ -117,12 +118,14 @@ if (signal) {
 ```
 
 拆开看它做了两件事：
+
 - **订阅中断**：给 `signal` 注册一个 `abort` 监听器，一旦触发就 `proc.kill()`。`{ once: true }` 表示只触发一次就自动移除。**为什么需要它？** 想象模型跑了一条 `npm install`（要 30 秒），用户等不及按了 Ctrl-C——如果没有这段，子进程会**继续在后台跑**，成为「孤儿进程」。有了它，中断信号立刻传导到子进程、把它杀掉。
 - **防泄漏地摘监听器**：`void proc.exited.then(() => signal.removeEventListener(...))`——**当进程正常结束时，主动把刚才注册的监听器摘掉**。为什么？因为 `signal`（来自 Agent 的 `AbortController`）的生命周期比单个 bash 命令**长得多**（它贯穿整个 Agent 循环）。如果每跑一条 bash 命令都往 `signal` 上挂一个监听器却不摘，跑一百条命令就积累一百个失效监听器——**内存泄漏**。这一行 `removeEventListener` 就是防这个的。`void` 前缀表示「我故意不 await 这个 Promise，让它在后台自己完成」。
 
 **③ 先读 stdout，再等退出码，失败才读 stderr。** 注意顺序：`await new Response(proc.stdout).text()` 先把标准输出读干净，再 `await proc.exited` 拿退出码。**只有 `exitCode !== 0`（失败）时，才去读 `stderr`** 并拼进错误信息。这是「按需读取」——成功时根本不碰 stderr。
 
 **④ 结果形状：成功吐裸 stdout，失败吐 `Error:` 前缀字符串——又一个"不返回结构化结果"的工具。** 这是 `bash` 和第 12 节 `read_file` 的**共同点**：它们都**不用** `okToolResult`/`errorToolResult`，而是直接返回字符串。
+
 - 成功 → `return output`（裸 stdout）；
 - 失败 → `return \`Error: Command ${command} failed with exit code ${exitCode}: ${stderr}\``。
 
@@ -331,7 +334,7 @@ async function walk(dir: string, maxDepth: number, prefix = "", depth = 0, entri
 
 **① 稳定排序**：`items.sort((a, b) => a.name.localeCompare(b.name))`——每一层都按名字字母序排。**为什么重要？** 因为 `readdir` 返回的顺序是**文件系统相关的、不保证稳定**的。排序后，同一个目录**每次列出来顺序都一样**——这对模型友好（可预测），也让测试能写死断言（[list-files.test.ts](../../src/coding/tools/__tests__/list-files.test.ts#L42) 就断言了 `entries` 精确等于 `["README.md", "src/", "src/index.ts"]`）。
 
-**② 目录带尾斜杠**：`item.isDirectory() ? \`${relativePath}/\` : relativePath`——目录项后面加个 `/`。这样模型一眼就能区分「`src/` 是目录、`index.ts` 是文件」，不用再去 `file_info` 挨个查。**这是一个"用一个字符传递类型信息"的极简巧思**（类似 `ls -F` 的行为）。
+**② 目录带尾斜杠**：`item.isDirectory() ? \`${relativePath}/\` : relativePath`——目录项后面加个 `/`。这样模型一眼就能区分「`src/` 是目录、`index.ts`是文件」，不用再去`file_info`挨个查。**这是一个"用一个字符传递类型信息"的极简巧思**（类似`ls -F` 的行为）。
 
 **③ 深度受控的递归**：`if (item.isDirectory() && depth < maxDepth)`——只有当前深度小于 `maxDepth` 才继续往下钻。这防止了「递归到天荒地老」（比如 `node_modules` 深不见底）。
 
@@ -357,6 +360,7 @@ invoke: async ({ path, recursive, maxDepth, limit, maxChars }) => {
 ```
 
 **注意 `recursive ? (maxDepth ?? 3) : 0` 这个巧妙的默认值编排**：
+
 - 不传 `recursive`（或 false）→ 传给 `walk` 的 `maxDepth` 是 **0** → `depth < 0` 永远为假 → **只列当前层，不递归**；
 - 传 `recursive: true` 但不指定 `maxDepth` → 默认 **3 层**；
 - 传 `recursive: true` + `maxDepth: N` → 递归 N 层。
@@ -516,31 +520,23 @@ if (policy.preferSummaryOnly || !policy.includeData) {
 
 **一句话总括**：**本节 7 个工具让 Agent 具备了"探索陌生环境"的能力——`bash` 是能力最全的逃生舱（裸字符串结果 + 可中断），B 组三个搜索工具站在第 12 节地基上用统一的"校验→执行→截断→封装"骨架回答"有什么/在哪"（并靠第 8 节 policy 只回摘要来节流），C 组三个系统工具用最轻量的"校验→一次系统调用→兜底"完成元信息读取与文件系统改动。它们生产的错误码（`INVALID_*`/`*_FAILED`/`RG_NOT_FOUND`）精确对齐第 8 节的分类器，构成又一条清晰的生产—消费链路。**
 
-***
+---
 
 ## 2. 亮点与关键设计
 
 明确标注哪些是「妙笔」、哪些是「关键决策」：
 
 1. **【核心妙笔】`bash` 用「`signal` → `proc.kill()` + 结束后 `removeEventListener`」实现可中断子进程。** 前半是「用户 Ctrl-C 能杀掉正在跑的子进程」（呼应第 5 节 `AbortController` 贯穿式取消），后半是「进程结束就摘监听器」防止长生命周期 `signal` 上累积失效监听器造成内存泄漏。一小段代码同时解决了「可中断」与「不泄漏」两个问题（1.2 ②）。
-
 2. **【关键决策】`bash` 与 `read_file` 一样"不返回结构化结果"，成功吐裸字符串、失败用 `Error:` 前缀编码。** 这个前缀精确对齐第 8 节 `normalizeToolResult` 里 `result.startsWith("Error:")` 的识别分支——是「工具错误就地捕获成文本」容错哲学（第 6 节）在 `bash` 里的落地（1.2 ④）。
-
 3. **【妙笔】`grep_search` 对 ripgrep 退出码的正确理解：`exit 1`（没找到）不算错误。** 只有 `exitCode >= 2` 才返 `GREP_FAILED`。若不特判，模型每次「搜不到」都会误收一个错误。这是「吃透底层工具约定」才能写对的细节（1.4 ②）。
-
 4. **【核心妙笔】`grep_search` 对「rg 未安装」的优雅降级 → `RG_NOT_FOUND`。** 它是全项目**唯一**一个被第 8 节 `inferToolErrorKind` 精确匹配（`code === "RG_NOT_FOUND"`）、归为独立类别 `environment_missing` 的错误码。因为「环境缺失」模型重试无用，必须提示用户安装——这类错误理应和「输入错误/执行失败」区别对待（1.4、Q2）。
-
 5. **【关键决策】搜索工具的「双保险节流」+ 第 8 节的「只回摘要」= 两级三闸的上下文防护。** 工具内 `limit`（卡条数）+ `maxChars`（卡字符）两道闸，加上第 8 节 policy 的 `preferSummaryOnly`（回喂时干脆扔掉 data）第三道闸。搜索结果再大也撑不爆上下文（1.3、1.7）。
-
 6. **【妙笔】「data 给人看、summary 给模型看」的双受众设计（`uiSummaryOnly`）。** 六个工具攒的结构化 data 不回喂给模型（省上下文），但经 `uiSummaryOnly` 交给 TUI 渲染给人看。同一份结果、两个受众、各取所需（1.7）。
-
 7. **【关键决策】`list_files` 的三个体贴细节：稳定排序、目录带尾斜杠、深度受控递归。** 排序让输出可预测（也让测试可断言），尾斜杠用一个字符传递「文件/目录」类型信息，`recursive ? (maxDepth ?? 3) : 0` 用一个变量编码「要不要递归 + 递归多深」（1.5）。
-
 8. **【关键决策】用「专用工具家族 + bash 逃生舱」而非「全靠 bash」。** 六个专用工具提供结构化结果、上下文节流、且只读工具无需审批；`bash` 兜底一切但结果非结构化、且必过审批。这是「安全通道 + 逃生舱」的分层安全设计（1.1、1.2 📌、3.4）。
-
 9. **【一致性红利】7 个工具共享第 12 节地基 → 同一套骨架复用 7 遍。** 「校验（`ensureDirectoryPath`/`ensureAbsolutePath`）→ 执行 → 截断（`truncateText`）→ 封装（`okToolResult`/`errorToolResult`）」的骨架高度一致。读懂一个就读懂一批——这正是第 12 节抽地基的回报（1.3~1.6）。
 
-***
+---
 
 ## 3. 工业对比
 
@@ -576,17 +572,17 @@ Helixent 因为**面向「编程」这个垂直领域**，才值得把「上下�
 
 ### 3.5 一览表
 
-| 维度 | Helixent（本节 7 工具） | Claude Code | OpenAI Codex | LangChain 通用 |
-| --- | --- | --- | --- | --- |
-| 内容搜索底层 | ripgrep（`grep_search`） | ripgrep | 多靠 shell `grep` | 视实现 |
-| 结构化搜索工具 | ✅ glob/grep/list/info | ✅ 对应工具族 | ❌ 偏 shell | 薄封装、无约定 |
-| 上下文节流 | ✅ limit+maxChars+preferSummaryOnly | ✅ | ❌ 靠模型自觉 | 需自己做 |
-| 可中断子进程 | ✅ signal→kill（bash/grep） | ✅ | ✅ | 视实现 |
-| 「rg 未装」降级 | ✅ RG_NOT_FOUND 独立类别 | ✅（一般也处理） | ➖ | ❌ |
-| shell 安全策略 | 靠第 15 节整体审批 | 命令级黑白名单+超时 | 权限模型 | 基本无 |
-| 只读工具免审批 | ✅（glob/grep/list/info） | ✅ | ➖ | ➖ |
+| 维度            | Helixent（本节 7 工具）             | Claude Code         | OpenAI Codex       | LangChain 通用 |
+| --------------- | ----------------------------------- | ------------------- | ------------------ | -------------- |
+| 内容搜索底层    | ripgrep（`grep_search`）          | ripgrep             | 多靠 shell`grep` | 视实现         |
+| 结构化搜索工具  | ✅ glob/grep/list/info              | ✅ 对应工具族       | ❌ 偏 shell        | 薄封装、无约定 |
+| 上下文节流      | ✅ limit+maxChars+preferSummaryOnly | ✅                  | ❌ 靠模型自觉      | 需自己做       |
+| 可中断子进程    | ✅ signal→kill（bash/grep）        | ✅                  | ✅                 | 视实现         |
+| 「rg 未装」降级 | ✅ RG_NOT_FOUND 独立类别            | ✅（一般也处理）    | ➖                 | ❌             |
+| shell 安全策略  | 靠第 15 节整体审批                  | 命令级黑白名单+超时 | 权限模型           | 基本无         |
+| 只读工具免审批  | ✅（glob/grep/list/info）           | ✅                  | ➖                 | ➖             |
 
-***
+---
 
 ## 4. 深度解释：为什么这样设计？不这样会怎样？
 
@@ -597,6 +593,7 @@ Helixent 因为**面向「编程」这个垂直领域**，才值得把「上下�
 **它在防「长生命周期 `signal` 上累积失效监听器」的内存泄漏。**
 
 先理清两个对象的**生命周期差异**：
+
 - `signal` 来自 Agent 的 `_abortController`，它的寿命是**整个 Agent 会话**——用户可能连续对话几十轮，中间跑了上百条 bash 命令，这个 `signal` 一直是同一个（每次 `stream()` 会 new 一个新的 `AbortController`，但在一次 `stream` 内跑的多个工具共享同一个 signal，见 [agent.ts](../../src/agent/agent.ts#L145)）。
 - 单条 bash 命令的寿命是**几秒**。
 
@@ -650,11 +647,12 @@ Helixent 因为**面向「编程」这个垂直领域**，才值得把「上下�
 
 **所以「用哪个校验函数」是由工具的语义决定的**：需要「一个现成的目录」就用 `ensureDirectoryPath`，只需要「一个格式合法的绝对路径、存不存在交给操作本身去处理」就用 `ensureAbsolutePath`。**这正是第 12 节「地基函数分层」的用武之地**——`ensureAbsolutePath` 是轻的第一道闸，`ensureDirectoryPath` 是在它之上加了磁盘校验的重版本，工具**按需选用刚好够用的那一层**，既不欠（漏校验导致底层报错）也不过（过度校验误伤合法输入）。
 
-***
+---
 
 ## 5. 参考资料
 
 **本节精讲的源码（7 个探索工具）**：
+
 - 万能逃生舱：[bash.ts](../../src/coding/tools/bash.ts)（`Bun.spawn` [L16-L20](../../src/coding/tools/bash.ts#L16-L20)、signal→kill [L22-L26](../../src/coding/tools/bash.ts#L22-L26)、`Error:` 前缀 [L30-L34](../../src/coding/tools/bash.ts#L30-L34)）
 - 通配符找文件：[glob-search.ts](../../src/coding/tools/glob-search.ts)（校验 [L24-L27](../../src/coding/tools/glob-search.ts#L24-L27)、`Bun.Glob` 边扫边停 [L29-L41](../../src/coding/tools/glob-search.ts#L29-L41)、截断+封装 [L43-L51](../../src/coding/tools/glob-search.ts#L43-L51)）
 - 内容搜索：[grep-search.ts](../../src/coding/tools/grep-search.ts)（拼 rg 命令 [L31-L38](../../src/coding/tools/grep-search.ts#L31-L38)、signal [L47-L51](../../src/coding/tools/grep-search.ts#L47-L51)、exit1 特判 [L54-L64](../../src/coding/tools/grep-search.ts#L54-L64)、RG_NOT_FOUND 降级 [L80-L90](../../src/coding/tools/grep-search.ts#L80-L90)）
@@ -664,6 +662,7 @@ Helixent 因为**面向「编程」这个垂直领域**，才值得把「上下�
 - 移动/重命名：[move-path.ts](../../src/coding/tools/move-path.ts)（双路径校验 [L21-L29](../../src/coding/tools/move-path.ts#L21-L29)、`rename` [L31-L33](../../src/coding/tools/move-path.ts#L31-L33)）
 
 **co-located 测试（第 21 节会讲这套约定）**：
+
 - [bash.test.ts](../../src/coding/tools/__tests__/bash.test.ts)（成功吐 stdout、失败 `Error:` 前缀、`skipIf` 无 zsh 时跳过）
 - [glob-search.test.ts](../../src/coding/tools/__tests__/glob-search.test.ts)（精确命中 `*.ts`、`INVALID_DIRECTORY`）
 - [grep-search.test.ts](../../src/coding/tools/__tests__/grep-search.test.ts)（`RG_NOT_FOUND` 与正常匹配双兼容、`INVALID_DIRECTORY`）
@@ -671,25 +670,28 @@ Helixent 因为**面向「编程」这个垂直领域**，才值得把「上下�
 - [file-info.test.ts](../../src/coding/tools/__tests__/file-info.test.ts)、[mkdir.test.ts](../../src/coding/tools/__tests__/mkdir.test.ts)、[move-path.test.ts](../../src/coding/tools/__tests__/move-path.test.ts)（各含 happy path + 结构化错误码断言）
 
 **上游依赖章节**：
+
 - [第 12 节 · 工具地基与文件读写](./12-tool-foundation-file-io.md)：`ensureDirectoryPath`/`ensureAbsolutePath`/`truncateText`/`okToolResult`/`errorToolResult`（本节 7 个工具的地基）
 - [第 8 节 · 工具结果处理管线](./08-tool-result-pipeline.md)：`getToolResultPolicy`（六工具 `preferSummaryOnly`）、`inferToolErrorKind`（`RG_NOT_FOUND`→`environment_missing`）、`normalizeToolResult`（`bash` 的 `Error:` 前缀识别）
 - [第 5/6 节 · ReAct 主循环 / 并行调度](./05-react-loop.md)：`AbortController` 与 `_act` 里 `tool.invoke(input, signal)` 的 signal 透传（`bash`/`grep_search` 的可中断来源）
 - [第 11 节 · Lead Agent](./11-lead-agent.md)：这 7 个工具被装配进 `tools` 数组、`<tool_usage>` 引导（Prefer list_files/glob_search 探索）、`CODING_TOOLS_REQUIRING_APPROVAL`（`bash`/`mkdir`/`move_path` 需审批）
 
 **关联源码（本节引用但不精讲）**：
+
 - 审批名单：[requires-approval.ts](../../src/coding/permissions/requires-approval.ts)、装配处：[lead-agent.ts](../../src/coding/agents/lead-agent.ts#L103-L117)
 - 工具签名（`invoke(input, signal?)`）：[function-tool.ts](../../src/foundation/tools/function-tool.ts#L20)
 - 结果 policy 与格式化：[tool-result-policy.ts](../../src/agent/tool-result-policy.ts)、[tool-result-runtime.ts](../../src/agent/tool-result-runtime.ts)
 - 工具编写规范：[code-convention.md](../code-convention.md)（`description` 第一参数、`ensureAbsolutePath` 强制、SCREAMING_SNAKE 错误码、`Bun.file` 优先）
 
 **外部资料**：
-- Bun `Bun.spawn` 子进程 API（`stdout: "pipe"`、`proc.kill()`、`proc.exited`）：<https://bun.sh/docs/api/spawn>
-- Bun `Bun.Glob` 通配符匹配（`scan`、`cwd`、`absolute`）：<https://bun.sh/docs/api/glob>
-- ripgrep（`rg`）与其退出码约定（0=匹配/1=无匹配/2=错误）：<https://github.com/BurntSushi/ripgrep>
-- MDN `AbortSignal` 与 `addEventListener("abort")`（本节 signal→kill 的基础）：<https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal>
-- Node.js `fs.rename` / `fs.mkdir` / `fs.stat`（C 组三工具底层）：<https://nodejs.org/api/fs.html>
 
-***
+- Bun `Bun.spawn` 子进程 API（`stdout: "pipe"`、`proc.kill()`、`proc.exited`）：[https://bun.sh/docs/api/spawn](https://bun.sh/docs/api/spawn)
+- Bun `Bun.Glob` 通配符匹配（`scan`、`cwd`、`absolute`）：[https://bun.sh/docs/api/glob](https://bun.sh/docs/api/glob)
+- ripgrep（`rg`）与其退出码约定（0=匹配/1=无匹配/2=错误）：[https://github.com/BurntSushi/ripgrep](https://github.com/BurntSushi/ripgrep)
+- MDN `AbortSignal` 与 `addEventListener("abort")`（本节 signal→kill 的基础）：[https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal)
+- Node.js `fs.rename` / `fs.mkdir` / `fs.stat`（C 组三工具底层）：[https://nodejs.org/api/fs.html](https://nodejs.org/api/fs.html)
+
+---
 
 ## 6. 小结与下一节预告
 

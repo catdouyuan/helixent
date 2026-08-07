@@ -4,7 +4,8 @@
 >
 > 对应 roadmap 为本节设定的**核心问题**：
 >
-> > 输入框的光标 / 历史 / 斜杠命令补全是怎么实现的？为什么同一套工具调用要写两个渲染器？消息如何「滚出」到终端历史？
+>> 输入框的光标 / 历史 / 斜杠命令补全是怎么实现的？为什么同一套工具调用要写两个渲染器？消息如何「滚出」到终端历史？
+>>
 >
 > **一句边界声明**：本节精讲 **`src/cli/tui/` 下负责「输入 + 渲染」的那半边**——与 [第 19 节](./19-tui-architecture.md) 精讲的「状态编排 + 交互回路」半边**互补拼成完整的 `tui/`**。本节精讲的文件清单如下，可分为**两大子系统**：
 >
@@ -20,7 +21,7 @@
 >
 > ⚠️ **一处「诚实标注」**：本节大量出现 `useInput`、`useState`、`useMemo`、`<Box>` / `<Text>`——这些「Ink = 把 React 渲染到终端」的大前提，[第 19 节](./19-tui-architecture.md) 1.2 已经讲透，本节**不再重复**，默认你已经接受了这个设定。本节也会回顾第 19 节的 `onSubmit`（斜杠命令在那里被「消费」），但只补讲第 19 节没细说的「命令是怎么被解析 / 补全出来的」——**两节合起来才是斜杠命令的完整故事**。凡引用第 19 节已讲清的机制，本节一律「点到为止 + 给链接」。
 
-***
+---
 
 ## 0. 承上启下
 
@@ -31,14 +32,12 @@
 本节就来一次性兑现这处伏笔。而在动手前，请先把**三条上游结论**装进脑子——它们是本节每一处设计的直接前提：
 
 1. **[第 19 节](./19-tui-architecture.md) 的 `onSubmit`「消费」了斜杠命令，但没讲命令「从哪来」。** 回忆第 19 节 1.5：用户按回车，`<InputBox>` 调 `onSubmit(submission)`，`onSubmit` 里 `resolveBuiltinCommand(text)` 识别 `/exit` / `/clear` / `/help` 就地拦截。**但「`/` 一按下去，那个候选命令面板是怎么弹出来的？用户敲 `/sk` 怎么就过滤出 `skill-creator`？按 Tab 怎么补全？」——第 19 节完全没讲，它只用到了「解析结果」。本节的 [command-registry.ts](../../src/cli/tui/command-registry.ts) + [use-command-input.ts](../../src/cli/tui/hooks/use-command-input.ts) 就是那套「命令从注册到补全」的完整机制。**
-
 2. **[第 19 节](./19-tui-architecture.md) 的 `useFlushToScrollback` 用到了两个「摆位即止」的渲染函数。** 回忆第 19 节 1.8：`App` **只用 `<MessageHistoryItem>` 渲染最后一条消息**（活动区），而「定稿」的历史消息用 `messageToPlainText(msg)` 转成纯文本、`write` 进终端 scrollback。**「这两个渲染器内部长什么样？为什么要有两个？」——第 19 节明说「留给第 20 节」。本节的 [message-history.tsx](../../src/cli/tui/components/message-history.tsx) 和 [message-text.ts](../../src/cli/tui/message-text.ts) 就是这两个渲染器的正身。**
-
 3. **[第 19 节](./19-tui-architecture.md) 的 Footer 显示了 `tokenUsage`，它由 `messages` 派生。** 回忆第 19 节 1.5 结尾：`tokenUsage` 由一个 `useMemo` 从 `messages` 调 `calculateTokenUsage` 算出、挂进 Context。**「这个累加具体怎么算？」——第 19 节「只看它被挂进 Context」。本节的 [token-usage.ts](../../src/cli/tui/token-usage.ts) 补上这最后一小块。**
 
 准备好了。我们同样先不看任何一个具体文件，而是先建立**「输入子系统」与「渲染子系统」两张分工图**——因为本节文件虽多，但只要抓住「**每个子系统都是『纯函数内核 → 状态 Hook → 组件外壳』三层**」这一个结构，就不会在十来个文件里迷路。
 
-***
+---
 
 ## 1. 主题内容
 
@@ -91,7 +90,6 @@
 **这张图的两个「记忆锚点」**：
 
 1. **输入子系统是「三层漏斗」**：底层是**与 React 无关的纯函数**（`input-editor` 只做字符串切片、`command-registry` 只做正则匹配），可以脱离界面单独测试（1.2、1.3 会看到它们的 co-located 测试）；中层是**把纯函数接进 React 的 Hook**（`use-command-input` 用 `useInput` 接键盘、把每次按键翻译成「调哪个纯函数」）；顶层是**只负责画的组件**（`input-box` 等，几乎没有逻辑）。**「逻辑往下沉成纯函数、React 只在中层做胶水、组件只管画」——这是本节输入子系统的设计总纲，也是它能被充分单测的原因。**
-
 2. **渲染子系统的核心矛盾是「两个渲染器」**：同一份 `message`，`message-history.tsx` 把它渲染成**会刷新的 Ink 组件树**（给活动区那一条），`message-text.ts` 把它渲染成**一次性写死的 ANSI 字符串**（给 scrollback 的历史）。**为什么不复用？** 因为它们的输出目标根本不同——一个要参与 React 的 diff / 重绘循环，一个是脱离 React 的裸终端输出。1.7 会专门论证这个「刻意不复用」的取舍。
 
 **本节的推进顺序**：先走完**输入子系统**（1.2 `input-editor` 纯函数内核 → 1.3 `command-registry` → 1.4 `use-input-history` → 1.5 `use-command-input` 大脑 → 1.6 三个组件），再走**渲染子系统**（1.7 「为什么两个渲染器」的总论 → 1.8 `message-history` Ink 版 → 1.9 `message-text` ANSI 版 → 1.10 `markdown` / `token-usage` / `themes`）。**每讲一个文件，我都会先标注它在上图的哪一层、属哪个子系统**，你就不会迷路。
@@ -169,6 +167,7 @@ export function moveCursorWordRight(state: InputEditorState): InputEditorState {
 **这是「按 Option/Alt + ← / →」按单词移动光标的实现**（1.5 会看到 `key.meta && input === "b"/"f"` 触发它）。逻辑是经典的「两段式扫描」：**先吃掉方向上的连续空格，再吃掉连续的非空格（一个完整单词）**。举例：`"hello world"` 光标在末尾（offset=11），`moveCursorWordLeft` 先没有空格可跳（第 ① 步 `text[10]='d'` 不是空格，不进循环），然后第 ② 步一路 `pos--` 越过 `world` 直到 `text[5]=' '` 停下，光标落在 offset=6（`world` 的 `w` 前）——正好是「跳到当前单词开头」。**这段逻辑就是 [input-editor.test.ts](../../src/cli/tui/__tests__/input-editor.test.ts) 里那一堆 `moveCursorWordLeft/Right` 测试用例覆盖的对象**（比如「跳过多个空格」`"foo   bar"` offset 9 → 6）。
 
 > 💡 **为什么要把光标操作抽成「纯函数」而非塞进组件？** 三个理由，一个比一个重要：
+>
 > 1. **可单测**：纯函数 `(state) => newState` 不依赖 React、不依赖终端，`bun test` 里直接 `expect(moveCursorWordLeft({text, cursorOffset})).toEqual(...)` 就能验证——[input-editor.test.ts](../../src/cli/tui/__tests__/input-editor.test.ts) 正是这么测的（11 个用例覆盖各种边界）。如果这些逻辑埋在 `useInput` 回调里，就得渲染整个组件、模拟按键才能测，成本高得多。
 > 2. **易推理**：每个函数只有「输入 state、输出 state」这一件事，没有副作用、没有隐藏状态，读一遍就懂。
 > 3. **好复用**：`use-command-input` 里每次按键只要「取当前 state、调对应纯函数、把结果 setState」，胶水极薄。**这正是 1.1 说的「逻辑往下沉成纯函数」——把『算什么』和『何时算 / 画出来』彻底分开。** 这也和第 8 节 `normalizeToolResult`、第 14 节 `apply_patch` 解析器「核心逻辑做成纯函数便于测试」是同一种工程审美，本节在 UI 层再次践行。
@@ -218,7 +217,7 @@ export async function loadAvailableCommands(skillsDirs?: string[]): Promise<Slas
 
 **核心是四个「解析 / 过滤」纯函数**，它们分工明确，逐个看：
 
-**① `getSlashQuery`——判断「此刻要不要弹命令面板」**（[L63-L67](../../src/cli/tui/command-registry.ts#L63-L67)）：
+**① `getSlashQuery`——**（[L63-L67](../../src/cli/tui/command-registry.ts#L63-L67)）：
 
 ```ts
 export function getSlashQuery(text: string): string | null {
@@ -520,7 +519,7 @@ return {
 
 > **第 ③ 层「组件外壳」——它们几乎没有逻辑，只把 1.5 Hook 的产出画到终端。** 三个组件层层嵌套：[input-box.tsx](../../src/cli/tui/components/input-box.tsx) 是外壳（调 Hook + 组装），里面套 [command-list.tsx](../../src/cli/tui/components/command-list.tsx)（候选面板）和 [highlighted-input.tsx](../../src/cli/tui/components/highlighted-input.tsx)（带光标的输入行）。
 
-**`InputBox`——组装外壳**（[input-box.tsx](../../src/cli/tui/components/input-box.tsx) 全文核心，[L20-L45](../../src/cli/tui/components/input-box.tsx#L20-L45)）：
+**——组装外壳**（[input-box.tsx](../../src/cli/tui/components/input-box.tsx) 全文核心，[L20-L45](../../src/cli/tui/components/input-box.tsx#L20-L45)）：
 
 ```tsx
 const { filteredCommands, highlightedCommandName, pickerOpen, placeholder, selectedIndex, text, cursorOffset } =
@@ -606,14 +605,14 @@ function getVisibleWindow(total, selectedIndex, maxVisible) {
 
 **看清楚了吗？两个渲染器面向的是两种完全不同的「输出机制」**：
 
-| 维度 | `message-history.tsx`（Ink 组件版） | `message-text.ts`（ANSI 纯文本版） |
-| --- | --- | --- |
-| **服务对象** | Ink 的**活动区**（最后一条消息） | 终端 **scrollback**（已定稿的历史） |
-| **产物** | React 组件树（`<Box>`/`<Text>`） | 一段带 `\x1b[…m` 转义码的**字符串** |
-| **是否参与 React** | **是**——会被 diff、随状态重绘 | **否**——`write` 一次就脱离 React |
-| **是否会再变** | 会（它是「正在进行」的那条，可能还在流式） | **永不再变**（定稿了才 flush） |
-| **上色方式** | Ink 的 `<Text color=…>` 属性 | 手写 ANSI 码（`\x1b[37m` 等） |
-| **Markdown** | 用 `<Markdown>` 组件（`marked-terminal`） | **不渲染 Markdown**，纯文本直出 |
+| 维度                     | `message-history.tsx`（Ink 组件版）        | `message-text.ts`（ANSI 纯文本版）        |
+| ------------------------ | -------------------------------------------- | ------------------------------------------- |
+| **服务对象**       | Ink 的**活动区**（最后一条消息）       | 终端**scrollback**（已定稿的历史）    |
+| **产物**           | React 组件树（`<Box>`/`<Text>`）         | 一段带`\x1b[…m` 转义码的**字符串** |
+| **是否参与 React** | **是**——会被 diff、随状态重绘        | **否**——`write` 一次就脱离 React  |
+| **是否会再变**     | 会（它是「正在进行」的那条，可能还在流式）   | **永不再变**（定稿了才 flush）        |
+| **上色方式**       | Ink 的`<Text color=…>` 属性               | 手写 ANSI 码（`\x1b[37m` 等）             |
+| **Markdown**       | 用`<Markdown>` 组件（`marked-terminal`） | **不渲染 Markdown**，纯文本直出       |
 
 **所以这不是「重复」，而是「同一份内容，翻译成两种目标语言」**——一份翻成「React 组件」（给 Ink 的渲染循环），一份翻成「ANSI 字符串」（给裸终端的 `write`）。**它们看起来像，是因为要显示的信息一样（都是「⏺ 某工具 + 参数摘要」）；它们不能复用，是因为输出机制的形态根本不同**：组件不能被 `stdout.write`，字符串也不能参与 React diff。
 
@@ -831,35 +830,25 @@ export const currentTheme = darkTheme;
 
 **至此渲染子系统讲完**：同一份 `message`，活动区那条走 `message-history.tsx`（Ink 组件、`<Markdown>` 富渲染、`todo` 实时进度），定稿的历史走 `message-text.ts`（手写 ANSI 字符串、简化摘要）；两者视觉对齐、分派对齐，只因服务的输出机制不同而各自实现。配套的 `markdown` / `token-usage` / `themes` 分别补上「富文本 / 用量 / 配色」。**这就是第 19 节那个「活动区 vs scrollback」分工的『渲染侧』全貌。**
 
-***
+---
 
 ## 2. 亮点与关键设计
 
 回顾全节，把散落的「妙笔」和「关键决策」拎出来，明确标注哪些是**关键决策**（架构层面、影响深远）、哪些是**妙笔**（局部精巧、值得抄作业）：
 
 1. **【关键决策】两个「刻意不复用」的渲染器，对应「活动区 vs scrollback」两端**：`message-history.tsx`（Ink 组件版）服务「正在变、要 diff」的活动区，`message-text.ts`（ANSI 纯文本版）服务「已定稿、永不变」的终端 scrollback。**它们不能合并——组件不能被 `stdout.write`、字符串不能参与 React diff**。这是本节最反直觉、也最能体现「让实现形态匹配输出机制」的设计（1.7）。它是第 19 节 `useFlushToScrollback` 分工的必然结果。
-
 2. **【关键决策】输入子系统的「纯函数内核 → 状态 Hook → 组件外壳」三层漏斗**：逻辑往下沉成**无 React 的纯函数**（`input-editor` 光标操作、`command-registry` 命令解析），React 只在中层做胶水（`use-command-input` 把按键翻译成「调哪个纯函数」），组件只管画。**这让最易错的核心逻辑（正则、光标边界）能被穷举单测，而组件保持极薄。** 是「关注点分离」在 TUI 层的彻底贯彻（1.1、1.2、1.3）。
-
 3. **【关键决策】斜杠命令统一「内建 + 技能」两种来源**：`SlashCommand.type` 区分 `builtin`/`skill`，`loadAvailableCommands` 把 4 条硬编码内建命令和[第 9 节](./09-skills.md) 动态发现的技能命令合并成一份候选池。**这把「技能系统」无缝接进了「斜杠命令」——用户敲 `/skill-creator` 就是请求激活那个技能**，`buildPromptSubmission` 负责把它打包成 `requestedSkillName`（1.3）。
-
 4. **【妙笔】`use-command-input` 的「优先级瀑布」按键分派**：一长串 `if-return` 按优先级排列，让**同一批键在不同上下文语义不同**——Esc 在面板开时关面板、面板关时中断 Agent；↑↓Enter 在面板开时选命令、面板关时翻历史 / 提交。**顺序即逻辑**，前面的先匹配（1.5）。
-
 5. **【妙笔】`inverse` 反显模拟终端光标**：终端没有原生插入符，`HighlightedInput` 用「反显光标所在字符」模拟块状光标，光标在末尾时补一个「反显的空格」。同时用 `highlightedCommandName` 把合法命令名标成粗体主题色，给「你打的命令有效」的即时反馈（1.6）。
-
 6. **【妙笔】`dismissedQuery` 记住「被 Esc 关掉的查询」**：用户打着 `/cl` 按 Esc 关面板后，若不记住「这个查询关过」，面板会因 `slashQuery` 仍非 null 立刻重开。`dismissedQuery` 这个小状态精准解决了「关了又弹」的恼人问题（1.5）。
-
 7. **【妙笔】`CommandList` 的滑动窗口 `getVisibleWindow`**：技能可能几十个，面板最多显示 5 条并让高亮居中、钳位防越界——「长列表只渲染可视窗口」的经典算法，避免命令面板撑爆屏幕（1.6）。
-
 8. **【妙笔】历史回溯对齐 shell 手感**：`useInputHistory` 的 ↑ 从最新往早翻、↓ 翻过最新则清空、空输入 / 已浏览中才触发、连续重复不入库——处处对齐 bash 的 `.bash_history` 行为，用户零学习成本（1.4、1.5）。
-
 9. **【妙笔】`/help` 复用消息渲染管线**：`formatHelp` 返回 Markdown 字符串，被包成一条 assistant 消息 `setMessages` 上屏，经 `<Markdown>` 渲染——**帮助文本不是特例，就是一条普通对话消息**，无需单开渲染路径（1.3）。
-
 10. **【妙笔】`<Markdown>` 站在 `marked` + `marked-terminal` 肩上**：13 行代码借成熟库把 Markdown 渲染成带 ANSI 的终端富文本，`useMemo` 缓存避免重复解析。**不重复造轮子，只做最薄集成**（1.10）。
-
 11. **【妙笔】`description` 作为工具第一参数在 UI 层兑现**：两个渲染器都用 `content.input.description` 作为工具摘要首行——[第 12 节](./12-tool-foundation-file-io.md) 强制每个工具带 `description`，正是为了这里能显示「一句人话」而非一坨 JSON（1.8、1.9）。
 
-***
+---
 
 ## 3. 工业对比
 
@@ -869,12 +858,12 @@ export const currentTheme = darkTheme;
 
 「在终端里编辑一行文本」看似简单，实则是个有历史的问题。
 
-| 方案 | 谁提供 | 能力 | 可控性 |
-| --- | --- | --- | --- |
-| **Helixent 手写 `input-editor`** | 自己（51 行纯函数） | 光标增删移、按词跳 | **完全可控**，可单测，可深度定制 |
-| **Node `readline`** | Node 标准库 | 完整行编辑 + 历史 | 命令式、和 Ink 的声明式渲染不搭 |
-| **`ink-text-input`（社区组件）** | Ink 生态 | 基础输入框 | 够用但难深度定制（斜杠补全、命令高亮） |
-| **`readline`-vendored（如 Claude Code）** | 移植改造 | 完整 | 重，但功能全 |
+| 方案                                              | 谁提供              | 能力               | 可控性                                 |
+| ------------------------------------------------- | ------------------- | ------------------ | -------------------------------------- |
+| **Helixent 手写 `input-editor`**          | 自己（51 行纯函数） | 光标增删移、按词跳 | **完全可控**，可单测，可深度定制 |
+| **Node `readline`**                       | Node 标准库         | 完整行编辑 + 历史  | 命令式、和 Ink 的声明式渲染不搭        |
+| **`ink-text-input`（社区组件）**          | Ink 生态            | 基础输入框         | 够用但难深度定制（斜杠补全、命令高亮） |
+| **`readline`-vendored（如 Claude Code）** | 移植改造            | 完整               | 重，但功能全                           |
 
 **Helixent 选「手写纯函数」的理由，是它的输入框有『非标准需求』**：斜杠命令补全面板、命令名高亮、`@技能` 请求、历史与补全共享 ↑↓——这些都不是通用输入框组件能开箱满足的。**与其用一个通用组件再和它「对抗」（覆盖它的按键、hack 它的渲染），不如自己用 51 行纯函数把「光标操作」这块攥在手里**，再在 `use-command-input` 里自由编排。**代价**是要自己处理边界（钳位、按词跳），但这些逻辑简单且**被单测覆盖**（[input-editor.test.ts](../../src/cli/tui/__tests__/input-editor.test.ts)）。**关键洞察**：当你的交互需求「比通用组件复杂、但比通用组件的全部功能又用不上」时，「手写一个恰好够用的纯函数内核」往往比「驯服一个大而全的组件」更省心——**这与第 14 节「手写 apply_patch 而非引第三方 diff 库」是同一种判断**：需求足够特殊时，自己写一个小而精确的，胜过背一个大而通用的。
 
@@ -908,7 +897,7 @@ export const currentTheme = darkTheme;
 
 **Helixent 目前选最轻的「常量」，是因为它还不需要运行时换肤**——只有一个暗色主题。但它留了一手：**所有组件都通过 `currentTheme.colors.X` 这层间接读颜色，从不硬编码 `"blue"`**。**这意味着「升级到运行时主题」的成本极低**：把 `currentTheme` 从常量改成「一个 Context 或一个根据配置选择的值」，组件一行不用动。**这是 YAGNI（You Aren't Gonna Need It）原则的漂亮实践**——现在不做运行时切换（因为不需要），但用「一层 `currentTheme` 间接」保证「将来需要时能低成本加上」。**与第 18 节「用 Commander 而非 oclif」、3.2「不上 fzf」是同一种判断哲学：为当下的真实需求选最轻的方案，同时用一层薄薄的间接为未来的可能性留门。**
 
-***
+---
 
 ## 4. 深度解释：为什么这样设计？不这样会怎样？
 
@@ -995,7 +984,9 @@ useInput((input, key) => {
 
 > **补充：怎么防「改一个忘另一个」？** 实践中有几种缓解：其一，两个文件都在 `tui/` 下、命名相近（`message-history` / `message-text`），改动时容易联想到；其二，可以加一个「两个渲染器对同一条消息的输出、去掉 ANSI 后文本一致」的快照测试来兜底（本项目目前靠 review 保证）。**关键是：这点重复是『显式、局部、易发现』的，而非『合并后隐藏在抽象里的隐式耦合』——前者可控，后者才危险。**
 
-### Q5：读完这一节，整个 Helixent 的「用户按一个键 → 屏幕上出现回应」全链路是怎么走通的？请把第 2/5/15/18/19/20 节串成一条线。
+### Q5：
+
+* [ ] 读完这一节，整个 Helixent 的「用户按一个键 → 屏幕上出现回应」全链路是怎么走通的？请把第 2/5/15/18/19/20 节串成一条线。
 
 **这个问题是整套教程的『收官验收』——如果你能把这条链路完整讲出来，就说明你真正吃透了 Helixent 的分层架构。答案是一条贯穿七个部分的『输入 → 处理 → 输出』闭环。**
 
@@ -1028,7 +1019,7 @@ useInput((input, key) => {
 
 **所以本节是全链路的『第一棒（收按键）』和『最后一棒（画出来）』**——它和第 19 节合起来，构成了「用户 ↔ Agent」之间那道完整的人机界面。**读到这里，从『用户按下一个键』到『屏幕上浮现 Agent 的回应』，中间经过的每一层、每一个数据结构、每一次转换，你都能说出它在哪一节讲过、为什么那样设计。这，就是这套教程想带你抵达的终点。**
 
-***
+---
 
 ## 5. 参考资料
 
@@ -1066,15 +1057,15 @@ useInput((input, key) => {
 
 **外部资料**：
 
-- Ink（`useInput` 键盘、`<Text inverse>` 反显、`useStdout`）：<https://github.com/vadimdemedes/ink>
-- `marked`（Markdown 解析器）：<https://marked.js.org/>
-- `marked-terminal`（把 Markdown 渲染成终端 ANSI 富文本）：<https://github.com/mikaelbr/marked-terminal>
-- 终端 ANSI 转义码（颜色 `\x1b[37m`、反显 `\x1b[7m`、复位 `\x1b[0m`）：<https://en.wikipedia.org/wiki/ANSI_escape_code>
-- 终端 scrollback（回滚缓冲区）概念：<https://en.wikipedia.org/wiki/Scrollback>
-- Rob Pike「A little copying is better than a little dependency」（Go 谚语，呼应 Q4）：<https://go-proverbs.github.io/>
-- DRY 原则的边界与 WET 反思：<https://en.wikipedia.org/wiki/Don%27t_repeat_yourself>
+- Ink（`useInput` 键盘、`<Text inverse>` 反显、`useStdout`）：[https://github.com/vadimdemedes/ink](https://github.com/vadimdemedes/ink)
+- `marked`（Markdown 解析器）：[https://marked.js.org/](https://marked.js.org/)
+- `marked-terminal`（把 Markdown 渲染成终端 ANSI 富文本）：[https://github.com/mikaelbr/marked-terminal](https://github.com/mikaelbr/marked-terminal)
+- 终端 ANSI 转义码（颜色 `\x1b[37m`、反显 `\x1b[7m`、复位 `\x1b[0m`）：[https://en.wikipedia.org/wiki/ANSI_escape_code](https://en.wikipedia.org/wiki/ANSI_escape_code)
+- 终端 scrollback（回滚缓冲区）概念：[https://en.wikipedia.org/wiki/Scrollback](https://en.wikipedia.org/wiki/Scrollback)
+- Rob Pike「A little copying is better than a little dependency」（Go 谚语，呼应 Q4）：[https://go-proverbs.github.io/](https://go-proverbs.github.io/)
+- DRY 原则的边界与 WET 反思：[https://en.wikipedia.org/wiki/Don%27t_repeat_yourself](https://en.wikipedia.org/wiki/Don%27t_repeat_yourself)
 
-***
+---
 
 ## 6. 小结与全书回望
 
@@ -1092,4 +1083,3 @@ useInput((input, key) => {
 👉 下一节 **第 21 节：测试、代码规范、构建与发布**（全书收尾）。
 
 准备好后，对我说「**生成第 21 节**」即可。
-

@@ -4,7 +4,8 @@
 >
 > 对应 roadmap 为本节设定的**核心问题**：
 >
-> > 终端界面为什么能用 React 写？第 5 节的流式事件、第 15 节两个 Manager 的「等待响应」，如何被接进 React 的状态与渲染？
+>> 终端界面为什么能用 React 写？第 5 节的流式事件、第 15 节两个 Manager 的「等待响应」，如何被接进 React 的状态与渲染？
+>>
 >
 > **一句边界声明**：本节精讲 **`src/cli/tui/` 下负责「状态编排 + 交互回路」的那半边**——注意，是**半边**。`tui/` 目录也由两块拼成：一块是**「状态编排 + 人机交互回路」**（本节：Agent 循环 Hook、两个 Manager Hook、审批 / 提问弹窗、`App` 骨架），另一块是**「用户输入 + 消息渲染」**（`input-editor`、`command-registry`、输入组件、`markdown` / `message-text` 渲染器、主题——留给 [第 20 节](./00-roadmap.md)）。本节精讲的文件清单如下，可分为**三组**：
 >
@@ -16,7 +17,7 @@
 >
 > ⚠️ **一处「诚实标注」**：本节会**频繁提到输入与渲染**（`<InputBox>`、`<MessageHistoryItem>`、`<Markdown>`、斜杠命令 `commands`），但**只讲到「把它们摆进 `App` 的哪个位置、由哪个状态驱动它们显示 / 隐藏」为止**——它们内部「输入框的光标 / 历史 / 斜杠补全怎么实现」「消息怎么被渲染成带颜色的文本 / Markdown」的机制，是 [第 20 节](./00-roadmap.md) 的任务。凡遇到输入 / 渲染组件，本节一律「摆位即止」，并给出后续章节的链接。请把本节读成一部**「状态如何流动 + 交互如何回环」的编排手册**，而不是「组件绘制教程」。
 
-***
+---
 
 ## 0. 承上启下
 
@@ -31,14 +32,12 @@
 本节就来一次性兑现这两处伏笔。而在动手前，请先把**三条上游结论**装进脑子——它们是本节每一处设计的直接前提：
 
 1. **[第 5 节](./05-react-loop.md) 的 `agent.stream()` 是一个 `AsyncGenerator<AgentEvent>`。** 回忆第 5 节：Agent 的主循环是一个 `async *stream()`，每完成一个「助手回合」或「一条工具结果」就 `yield` 一个 `{ type: "message", message }` 事件，在模型还在流式吐字时则 `yield` `{ type: "progress" }` 事件（见 [agent-event.ts](../../src/agent/agent-event.ts)）。**「谁来 `for await` 这个生成器、把 message 事件变成界面上的一条消息？」——第 5 节把这个问题留给了 UI 层。本节的 `AgentLoopProvider.onSubmit` 就是那个消费者。**
-
 2. **[第 15 节](./15-human-in-the-loop.md) 的两个 `Manager` 都在「等一个 UI 来 `subscribe` 并 `respond`」。** 审批用 [approval-manager.ts](../../src/coding/permissions/approval-manager.ts) 的 `globalApprovalManager`，提问用 [ask-user-question-manager.ts](../../src/coding/tools/ask-user-question-manager.ts) 的 `globalAskUserQuestionManager`。它们的共同形状是「**队列 + 单活跃请求 + 单订阅者**」：`askUser(...)` / `askUserQuestion(...)` 返回一个 `Promise`（Agent 那边 `await` 它、被阻塞），同时把请求推进队列；`subscribe(cb)` 注册唯一的订阅者，队列一有「当前活跃请求」就回调它，队列空了就回调 `null`；`respond(...)` 用一个决定 resolve 掉那个 Promise。**「谁来 subscribe、谁来 respond？」——第 15 节明说了「留给尚未登场的 React UI」。本节的两个 `use*Manager` Hook 就是那个 UI。**
-
 3. **[第 18 节](./18-cli-config-persistence.md) 第 ⑦ 步的 `render(<AgentLoopProvider><App/></AgentLoopProvider>)`。** 装配好的 `agent`、`commands` 被传进 `AgentLoopProvider`，`App` 挂在它下面。**本节要做的，就是打开 `AgentLoopProvider` 和 `App` 这两个「黑盒」，看它们内部怎么工作。**
 
 准备好了。我们同样先不看任何一个具体文件，而是先建立**「一个数据流 + 两条交互回路」**的全局地图——因为本节最容易让人迷路的地方，就是**把「Agent 输出消息」这条『单向数据流』和「审批 / 提问」这两条『双向交互回路』搅在一起**。有了地图，再逐个击破。
 
-***
+---
 
 ## 1. 主题内容
 
@@ -89,14 +88,14 @@ Helixent 的 TUI 看似组件很多，但只要抓住**「数据往哪流、交�
 
 **三条线的性质截然不同，务必分清**：
 
-| 维度 | 线一：Agent 数据流 | 线二 / 线三：审批 / 提问回路 |
-| --- | --- | --- |
-| **方向** | **单向**（Agent → UI，只输出） | **双向**（Agent ↔ UI，一问一答） |
-| **载体** | `agent.stream()` 的 `AgentEvent` 生成器 | 第 15 节两个 Manager 的 `Promise` + `subscribe` |
-| **UI 侧入口** | `AgentLoopProvider` 的 `onSubmit` | `useApprovalManager` / `useAskUserQuestionManager` |
-| **状态落点** | `messages` 数组（+ `streaming` 布尔） | `approvalRequest` / `askUserQuestionRequest`（单个请求或 null） |
-| **是否阻塞 Agent** | 否（消息只是流过） | **是**（Manager 的 Promise 没 resolve，Agent 就卡住等人类） |
-| **对应组件** | `<MessageHistoryItem>` + `<StreamingIndicator>` | `<ApprovalPrompt>` / `<AskUserQuestionPrompt>` |
+| 维度                     | 线一：Agent 数据流                                  | 线二 / 线三：审批 / 提问回路                                        |
+| ------------------------ | --------------------------------------------------- | ------------------------------------------------------------------- |
+| **方向**           | **单向**（Agent → UI，只输出）               | **双向**（Agent ↔ UI，一问一答）                             |
+| **载体**           | `agent.stream()` 的 `AgentEvent` 生成器         | 第 15 节两个 Manager 的`Promise` + `subscribe`                  |
+| **UI 侧入口**      | `AgentLoopProvider` 的 `onSubmit`               | `useApprovalManager` / `useAskUserQuestionManager`              |
+| **状态落点**       | `messages` 数组（+ `streaming` 布尔）           | `approvalRequest` / `askUserQuestionRequest`（单个请求或 null） |
+| **是否阻塞 Agent** | 否（消息只是流过）                                  | **是**（Manager 的 Promise 没 resolve，Agent 就卡住等人类）   |
+| **对应组件**       | `<MessageHistoryItem>` + `<StreamingIndicator>` | `<ApprovalPrompt>` / `<AskUserQuestionPrompt>`                  |
 
 **记住这张表**：本节接下来的 1.2 先讲清「Ink 是什么、为什么终端能用 React」这个大前提；1.3～1.5 讲**线一**（`use-agent-loop.ts`：Context、节流刷新、`onSubmit` 消费事件流）；1.6～1.7 讲**线二、线三**（两个 `use*Manager` Hook + 两个弹窗组件）；1.8 回到 `app.tsx`，看三条线如何在一屏里**互斥地**合流（同一时刻，要么显示输入框，要么显示某个弹窗）。**每讲一块，我都会先标注它属于哪条线**，你就不会迷路。
 
@@ -306,6 +305,7 @@ const onSubmit = useCallback(
 - **⑤⑥ `for await` 消费事件流**：这就是第 5 节结尾追问的「谁来 `for await` 这个生成器」的答案。只挑 `event.type === "message"` 的事件 `enqueueMessage`；**`progress` 事件被故意忽略**。源码里那段注释把原因写得很清楚（[L131-L133](../../src/cli/tui/hooks/use-agent-loop.ts#L131-L133)）：
 
   > progress events intentionally ignored: the UI shows a generic "Thinking..." shimmer driven by the `streaming` boolean, and MessageHistory is the single source of truth for tool calls.
+  >
 
   **翻译一下这个设计决策**：进度事件（模型正在逐字吐 thinking / 正在拼某个工具的参数）**不驱动界面**——界面不搞「逐字打字机」效果，只用一个笼统的「Thinking… 微光」表示「在忙」（由 `streaming` 驱动）；而**所有工具调用的展示，都以 `messages`（`MessageHistory`）为唯一真相源**。这样做既避免了「进度事件太密集导致的刷新风暴」，又保证了「工具调用只有一处显示逻辑，不会两处打架」。**这是一个「少即是多」的克制决策——不是所有能显示的都要显示。**
 - **⑦ `isAbortError` 静默收场**：用户按 Esc → `abort()` → `agent.stream()` 抛 AbortError。这不是「错误」，是「用户主动喊停」，所以 `return` 掉、什么都不显示。`isAbortError`（[L179-L184](../../src/cli/tui/hooks/use-agent-loop.ts#L179-L184)）还特意认了 `DOMException` 的 `AbortError`、`Error.name === "AbortError"`、以及 Anthropic SDK 的 `APIUserAbortError` 三种形态——**因为「中断」这个信号在不同层可能被包装成不同的异常类型**，得都识别出来。
@@ -616,33 +616,24 @@ function useFlushToScrollback(messages, flushedRef, write) {
 
 **至此，`App` 把三条线收成了一屏**：顶部（空会话时）是 Logo 头部，中间活动区是「最后一条消息 + 微光 + 待办面板」，底部「互斥地」是输入框 / 审批弹窗 / 提问弹窗之一，最下方是显示模型名和 token 用量的页脚；而定稿的历史消息则「毕业」进终端 scrollback。**线一的数据流、线二线三的交互回路，都在这一个 `return` 里各就各位。**
 
-***
+---
 
 ## 2. 亮点与关键设计
 
 回顾全节，把散落的「妙笔」和「关键决策」拎出来，明确标注哪些是**关键决策**（架构层面、影响深远）、哪些是**妙笔**（局部精巧、值得抄作业）：
 
 1. **【关键决策】Ink = 用 React 渲染到终端，于是状态管理全盘复用**：把终端当成「一块可以用 React 刷新的画布」，从而让 `useState`/`useEffect`/`useContext`/`useMemo`/自定义 Hook 这套成熟的状态管理武器，原样用于一个命令行界面。**这是本节所有其他设计得以成立的地基假设**——没有它，就没有「Context 分发状态」「Hook 封装订阅」「声明式渲染」。
-
 2. **【关键决策】「一个单向数据流 + 两条双向交互回路」的三线分离**：Agent 输出用「异步生成器」承载（UI 主动 `for await` 拉、单向、不阻塞 Agent），审批 / 提问用「Promise + 订阅」承载（Manager 主动推、双向、阻塞 Agent 直到人类回应）。**「数据流用生成器、交互回路用 Promise+订阅」的分工，是全节的总纲**——它把两种本质不同的通信清晰地分开。
-
 3. **【关键决策】`App` 的「互斥三选一」渲染**：同一时刻，底部只渲染输入框 / 审批弹窗 / 提问弹窗之一。因为它们都要抢占键盘，**「同一时刻只有一个组件监听键盘」是终端 UI 的硬约束**。这条互斥链，与第 15 节两个 Manager 的「单活跃请求」在语义上严丝合缝——UI 一次只显示一个，Manager 一次只激活一个。
-
 4. **【妙笔】`enqueueMessage` + 50ms 批量刷新的节流渲染**：不「来一条消息渲染一帧」，而是「攒进篮子、50ms 倒一次」，把一个回合内密集的 N 次 setState 压成「每 50ms 至多一次」。50ms ≈ 20fps，肉眼流畅、机器省力——节流在 UI 刷新上的教科书用法。
-
 5. **【妙笔】`useFlushToScrollback`：Ink 活动区 + 终端 scrollback 的分工**：Ink 只渲染「最后一条消息 + 弹窗 / 输入框 + 页脚」这一小块频繁变化的活动区；一旦消息「定稿」就用 `stdout.write` 打印进终端原生滚动缓冲区、从 Ink 毕业。**把重绘成本从 O(对话长度) 压到 O(1)**，是让 TUI 在长对话下依然流畅的关键一招。
-
 6. **【妙笔】`state` + `ref` 配对，在长期存活的回调里读最新值**：`streaming`/`streamingRef`、以及提问弹窗的 `stateRef`——`useState` 版触发重渲染，`useRef` 版供 `onSubmit`/`useInput` 这类「注册一次的闭包」读到「此刻的最新值」而非「注册那刻的旧值」。这个模式在本节出现三次，是「异步闭包读 state 过期」这一 React 常见坑的通用解法。
-
 7. **【妙笔】两个 `use*Manager` Hook 用 `useEffect(() => manager.subscribe(setRequest), [])` 把命令式订阅翻译成声明式 state**：订阅的生命周期恰好绑定组件生命周期（`subscribe` 的返回值直接当 `useEffect` 清理函数），把「Manager 有个待响应请求」这件异步事件，变成「`request` state 非 null」这个可渲染状态。**这是「异步 Promise 世界」与「React 渲染世界」之间的那座桥。**
-
 8. **【妙笔】`progress` 事件被故意忽略，工具调用以 `MessageHistory` 为唯一真相源**：界面不搞逐字打字机，只用一个 `streaming` 布尔驱动的笼统「Thinking… 微光」表示忙碌；所有工具调用只在 `messages` 里显示一处。既躲过「进度事件刷新风暴」，又保证「工具展示不会两处打架」——「少即是多」的克制。
-
 9. **【妙笔】API 错误被收编成 assistant 消息而非崩溃**：模型报错时把错误信息包装成一条普通消息上屏（附 "You can try again."），而 abort 则静默收场。**「错误也是一种要展示的内容」**——呼应第 5 节 `_act` 工具错误「就地捕获成文本」的同一种容错哲学。
-
 10. **【妙笔】`supportProjectWideAllow` 一个 prop 贯穿三层**：从 `cli/index.tsx` → `App` → `<ApprovalPrompt>`，控制「永久允许本项目」这个高权限选项是否出现，并最终决定第 18 节的白名单是否落盘。props 作为「配置通道」把最外层的授权策略贯彻到最里层的按钮。
 
-***
+---
 
 ## 3. 工业对比
 
@@ -652,12 +643,12 @@ function useFlushToScrollback(messages, flushedRef, write) {
 
 Helixent 用 [Ink](https://github.com/vadimdemedes/ink)（React 渲染到终端）写 TUI。对比几种主流路线：
 
-| 方案 | 语言 / 范式 | 状态管理 | 代表项目 |
-| --- | --- | --- | --- |
-| **Ink（Helixent 选择）** | JS/TS，**React 声明式** | React（useState/Context/Hook） | Claude Code、GitHub Copilot CLI、Codex CLI 等 |
-| **Bubbletea** | Go，**Elm 架构（MVU）** | `Model`+`Update`+`View` | Charm 系工具 |
-| **Ratatui** | Rust，**即时模式（immediate mode）** | 自己管，每帧重画 | 各种 Rust TUI |
-| **blessed / ncurses** | JS/C，**命令式操作「窗口对象」** | 手动 | 老派 TUI |
+| 方案                           | 语言 / 范式                                | 状态管理                       | 代表项目                                      |
+| ------------------------------ | ------------------------------------------ | ------------------------------ | --------------------------------------------- |
+| **Ink（Helixent 选择）** | JS/TS，**React 声明式**              | React（useState/Context/Hook） | Claude Code、GitHub Copilot CLI、Codex CLI 等 |
+| **Bubbletea**            | Go，**Elm 架构（MVU）**              | `Model`+`Update`+`View`  | Charm 系工具                                  |
+| **Ratatui**              | Rust，**即时模式（immediate mode）** | 自己管，每帧重画               | 各种 Rust TUI                                 |
+| **blessed / ncurses**    | JS/C，**命令式操作「窗口对象」**     | 手动                           | 老派 TUI                                      |
 
 **Helixent 选 Ink 的理由，与它的整体技术栈一脉相承**：项目本就是 Bun + TypeScript + Zod 的 JS/TS 生态，用 Ink 意味着**「UI 层和业务层同语言、同心智模型」**——写 Agent 循环用 async generator，写界面用 React Hook，都是 JS 开发者熟悉的东西，无需引入第二种语言 / 范式。而且**「声明式」比「命令式」在这种『状态多、变化频繁』的交互式界面上优势明显**：你只描述「界面此刻该长什么样」，不用手动算「从上一帧到这一帧要改哪几个字符、光标移到哪」。**代价**是 Ink 背后拖着 React + Yoga 布局引擎，比 Ratatui 那种「零运行时、直接画字符」的方案重、也慢一些——但对一个「主要瓶颈在等模型返回、而非等界面刷新」的 Agent CLI 来说，这点开销完全可接受。**关键洞察**：Claude Code、Copilot CLI、Codex CLI 等一票现代 AI 编程 CLI **不约而同都选了 Ink**——因为「AI CLI」这个品类的界面特征（流式文本、频繁状态变化、要弹窗交互）恰好是 React 声明式模型的舒适区。
 
@@ -690,7 +681,7 @@ Agent 要向人类要一个输入（审批 / 回答），架构上有两种典�
 
 **Helixent 的方案是「顺应平台特性」的典范**：网页里要费劲实现虚拟滚动，是因为浏览器没有「打印一行就永久留在可滚动历史里」的原生能力；而**终端天生就有**（这就是普通 `console.log` 的行为）。Helixent 敏锐地利用了这一点——**定稿消息像 `console.log` 一样「打印并遗忘」，只有活动区归 Ink 管**。**结论**：在合适的平台上，「借力平台原生能力」往往比「在框架层重新发明一个通用方案」更省、更快。这是 TUI 相比 GUI 的一个独特红利。
 
-***
+---
 
 ## 4. 深度解释：为什么这样设计？不这样会怎样？
 
@@ -769,7 +760,7 @@ Agent 要向人类要一个输入（审批 / 回答），架构上有两种典�
 
 **这就是本节适配层的深层价值**：它证明了「前面所有节的引擎，是真的与 UI 解耦的」——**换界面 = 重写『怎么画 + 怎么收按键』这层皮 + 复用『React 状态编排』的骨架 + 引擎零改动**。第 5 节把输出设计成生成器、第 15 节把交互设计成「Manager 队列 + 订阅」、第 18 节 Q5 预言「Web 也能 subscribe」，全都是为了**这一刻的可替换性**而埋的接缝。**本节是这些接缝的第一个「使用者」，也因此成了检验『前面的解耦是否真的成立』的试金石——而它证明了：成立。**
 
-***
+---
 
 ## 5. 参考资料
 
@@ -813,14 +804,14 @@ Agent 要向人类要一个输入（审批 / 回答），架构上有两种典�
 
 **外部资料**：
 
-- Ink（React for CLI，`<Box>`/`<Text>`/`useInput`/`useStdout`）：<https://github.com/vadimdemedes/ink>
-- React Hooks（`useState`/`useEffect`/`useRef`/`useCallback`/`useMemo`/`useContext`）：<https://react.dev/reference/react/hooks>
-- React「订阅外部数据源」的推荐模式（`useEffect` + 清理函数 / `useSyncExternalStore`）：<https://react.dev/reference/react/useSyncExternalStore>
-- 节流（throttle）与防抖（debounce）的区别：<https://developer.mozilla.org/en-US/docs/Glossary/Throttle>
-- Yoga（Ink 底层的 Flexbox 布局引擎）：<https://www.yogalayout.dev/>
-- 终端 ANSI 转义码（颜色 / 清屏 / 光标控制）：<https://en.wikipedia.org/wiki/ANSI_escape_code>
+- Ink（React for CLI，`<Box>`/`<Text>`/`useInput`/`useStdout`）：[https://github.com/vadimdemedes/ink](https://github.com/vadimdemedes/ink)
+- React Hooks（`useState`/`useEffect`/`useRef`/`useCallback`/`useMemo`/`useContext`）：[https://react.dev/reference/react/hooks](https://react.dev/reference/react/hooks)
+- React「订阅外部数据源」的推荐模式（`useEffect` + 清理函数 / `useSyncExternalStore`）：[https://react.dev/reference/react/useSyncExternalStore](https://react.dev/reference/react/useSyncExternalStore)
+- 节流（throttle）与防抖（debounce）的区别：[https://developer.mozilla.org/en-US/docs/Glossary/Throttle](https://developer.mozilla.org/en-US/docs/Glossary/Throttle)
+- Yoga（Ink 底层的 Flexbox 布局引擎）：[https://www.yogalayout.dev/](https://www.yogalayout.dev/)
+- 终端 ANSI 转义码（颜色 / 清屏 / 光标控制）：[https://en.wikipedia.org/wiki/ANSI_escape_code](https://en.wikipedia.org/wiki/ANSI_escape_code)
 
-***
+---
 
 ## 6. 小结与下一节预告
 
@@ -840,4 +831,3 @@ Agent 要向人类要一个输入（审批 / 回答），架构上有两种典�
 👉 下一节 **第 20 节：TUI 输入、命令面板与消息渲染**。
 
 准备好后，对我说「**生成第 20 节**」即可。
-

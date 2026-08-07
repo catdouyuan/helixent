@@ -4,11 +4,12 @@
 >
 > 对应 roadmap 为本节设定的**核心问题**：
 >
-> > 所有 coding 工具共享哪些「地基函数」（路径校验、结果封装、文本截断）？Agent 读改文件的工具如何设计得「既好用又防错」？
+>> 所有 coding 工具共享哪些「地基函数」（路径校验、结果封装、文本截断）？Agent 读改文件的工具如何设计得「既好用又防错」？
+>>
 >
 > **一句边界声明**：本节精讲**五个文件**——两个「地基」文件 [tool-utils.ts](../../src/coding/tools/tool-utils.ts)（45 行）、[tool-result.ts](../../src/coding/tools/tool-result.ts)（17 行），以及三个最基础的文件操作工具 [read-file.ts](../../src/coding/tools/read-file.ts)、[write-file.ts](../../src/coding/tools/write-file.ts)、[str-replace.ts](../../src/coding/tools/str-replace.ts)。这五个文件加起来不到 160 行，却是**整个 `coding/tools` 目录 15 个工具共同站立的地面**。[第 13 节](./00-roadmap.md)（探索工具）、[第 14 节](./00-roadmap.md)（apply_patch）都要复用本节的地基函数，所以**本节必须先于它们**。
 
-***
+---
 
 ## 0. 承上启下
 
@@ -33,7 +34,7 @@
 
 准备好了，打开 [tool-utils.ts](../../src/coding/tools/tool-utils.ts)，我们从地面开始往上盖。
 
-***
+---
 
 ## 1. 主题内容
 
@@ -49,10 +50,10 @@
 
 所以 Helixent 的做法是：**把这三件事抽成两个"地基文件"**，让所有工具"复用同一套地面"：
 
-| 地基文件 | 提供什么 | 解决上面哪件事 |
-| --- | --- | --- |
-| [tool-utils.ts](../../src/coding/tools/tool-utils.ts) | `ensureAbsolutePath` / `ensureDirectoryPath` / `isWithinDirectory` / `truncateText` | 路径校验 + 文本截断 |
-| [tool-result.ts](../../src/coding/tools/tool-result.ts) | `okToolResult` / `errorToolResult` | 结果封装 |
+| 地基文件                                               | 提供什么                                                                                    | 解决上面哪件事      |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------- | ------------------- |
+| [tool-utils.ts](../../src/coding/tools/tool-utils.ts)   | `ensureAbsolutePath` / `ensureDirectoryPath` / `isWithinDirectory` / `truncateText` | 路径校验 + 文本截断 |
+| [tool-result.ts](../../src/coding/tools/tool-result.ts) | `okToolResult` / `errorToolResult`                                                      | 结果封装            |
 
 **关键洞察**：这两个文件加起来只有 62 行，但它们是**「一致性」的物理保证**。只要所有工具都调 `ensureAbsolutePath`，那么"相对路径"这个错误在**全项目**就长同一个样（同样的文案、同样的 `INVALID_PATH` 错误码）；只要都调 `errorToolResult`，那么失败结果的**形状**在全项目就完全一致。**地基的价值不在于它写了多少代码，而在于它消灭了多少"本可以各写各的"分歧。**
 
@@ -399,7 +400,7 @@ try {
 - **写盘同样包 `try/catch`**，失败转 `WRITE_FAILED`（和 `write_file` 一致）。
 - **成功摘要报"替换了几处"**（`Replaced N occurrence(s)`），data 带 `{ path, replacements, changed }`。
 
-**关键设计：`description` 里那句 "Make sure the `old` is unique in the file"。** 看工具的顶层 `description`：`"Replace occurrences of a substring in a file. Make sure the \`old\` is unique in the file."` 这句话是**给模型的强引导**——它在教模型："**你给的 `old` 最好在文件里是唯一的**"。为什么？因为如果 `old` 是个很短、很常见的串（比如 `data`），文件里出现几十次，不传 `count` 就会**全被替换**，造成"误伤"。所以最佳实践是：**让 `old` 带上足够的上下文（前后几行），使它在文件里唯一**，这样才能精确命中你想改的那一处。
+**关键设计：`description` 里那句 "Make sure the `old` is unique in the file"。** 看工具的顶层 `description`：`"Replace occurrences of a substring in a file. Make sure the \`old\` is unique in the file."`这句话是**给模型的强引导**——它在教模型："**你给的`old`最好在文件里是唯一的**"。为什么？因为如果`old`是个很短、很常见的串（比如`data`），文件里出现几十次，不传 `count`就会**全被替换**，造成"误伤"。所以最佳实践是：**让`old` 带上足够的上下文（前后几行），使它在文件里唯一**，这样才能精确命中你想改的那一处。
 
 > ⚠️ **一个要说清的落差**：roadmap 的亮点预告里写 `str_replace` "**强制**唯一匹配以防误改"。但读源码你会发现——**代码并没有在"`old` 出现多次时报错"**。它只是：不传 `count` 就全替换、传了 `count` 就替换前 N 个，并**在 `description` 里"劝"模型保证唯一**。也就是说，"唯一匹配"是通过**提示词引导（软约束）**而非**代码强制（硬约束）**实现的。这是个值得记住的区分：Helixent 这里选择了"相信模型 + 用 `count` 兜底"的轻量方案，而不是"代码里数到 >1 就拒绝"的强硬方案。真正做到"逐行硬校验、打错就拒绝"的，是 [第 14 节](./00-roadmap.md) 的 `apply_patch`——这也正是为什么还需要那个更重的工具。**读教程要以源码为准**：我在这里把预告和实现的差异摊开讲，就是这个意思。
 
@@ -459,29 +460,22 @@ description: z.string().describe("Explain why you want to <action>. Always place
 
 **一句话总括**：**`tool-utils` 和 `tool-result` 是两块"地面"——前者管"路径对不对、文本长不长"，后者管"结果长什么形状"；`read_file`/`write_file`/`str_replace` 站在这两块地面上，各自处理"读/整写/局部替换"，并通过统一的错误码与摘要，把产物交给第 8 节的管线回喂模型。唯一的例外是 `read_file` 成功时直接吐原文——一个被第 8 节特判配对处理的、为可读性而生的刻意破例。**
 
-***
+---
 
 ## 2. 亮点与关键设计
 
 明确标注哪些是「妙笔」、哪些是「关键决策」：
 
 1. **【核心决策】把"路径校验 / 结果封装 / 文本截断"抽成两个地基文件。** 62 行代码换来的是**全项目的一致性**——同一个"相对路径"错误在任何工具里都长同一个样、带同一个 `INVALID_PATH` 码；同一个成功/失败结果在任何工具里都是同一个形状。地基的价值不在代码量，而在消灭分歧（1.1、1.2、1.3）。
-
 2. **【关键决策】地基函数一律"返回值表达成败"（`{ ok, ... }`）而非抛异常。** `ensureAbsolutePath`/`ensureDirectoryPath` 返回可辨识联合，配合 `as const` 让 TS 自动收窄。这与 [第 4 节](./04-tool.md)"工具里别抛异常"一脉相承，也让调用方用 `if (!x.ok)` 显式处理每一种失败（1.2）。
-
 3. **【妙笔】`read_file` 成功时"不返回结构化结果、直接吐原文"的刻意破例。** 文件内容原样喂给模型可读性最好，包一层 JSON 反而累赘。这个破例与 [第 8 节](./08-tool-result-pipeline.md) `formatToolResultForMessage` 里那行 `if (toolName === "read_file")` 特判**配对出现**——上游破例、下游放行，是一处教科书级的"跨层协同"（1.4、Q1）。
-
 4. **【关键决策】错误码的前后缀是"和第 8 节分类器对齐的暗号"。** `INVALID_PATH`/`FILE_NOT_FOUND`/`WRITE_FAILED` 等不是随手起名——它们的前后缀被 [第 8 节](./08-tool-result-pipeline.md) 的 `inferToolErrorKind` 用来推断错误类别。本节"生产"错误码、第 8 节"消费"错误码，构成清晰的生产—消费链路（1.3、Q4）。
-
 5. **【妙笔】`errorToolResult` 用条件展开 `...(code ? { code } : {})` 保持结果形状干净。** 不传的字段"根本不出现"而非 `undefined`，让 JSON 输出干净、让下游 `if (result.code)` 判断可靠（1.3）。
-
 6. **【关键决策】"好用"与"防错"两手抓。** 好用：`read_file` 越界行号自动收口、`write_file` 自动建父目录、`str_replace` 空转不写盘；防错：层层前置校验 + 全程 `try/catch` 兜底 + 带错误码的结构化失败。每个工具都在"让常见意图顺畅完成"和"把异常输入拦在门外"之间取平衡（1.4、1.5、1.6）。
-
 7. **【核心妙笔】`description` 作为强制第一参数——诱导思考 + 可审计。** 强制模型每次调用先写一句"我为什么这么做"，本质是轻量的思维链诱导，也让 TUI/审批能显示 Agent 意图。放"第一个"是为了配合流式生成——意图最先吐出来（1.7）。
-
 8. **【诚实标注】两处"预告 vs 实现"的落差**：`isWithinDirectory` 已备好但**尚未在任何工具接入**（沙箱边界目前靠第 15 节审批而非工具内校验）；`str_replace` 的"唯一匹配"是**提示词软约束**而非**代码硬校验**（真正硬校验的是第 14 节 `apply_patch`）。识别这类落差，是读真实项目源码的必备敏感度（1.2、1.6）。
 
-***
+---
 
 ## 3. 工业对比
 
@@ -513,16 +507,16 @@ Helixent 因为是**面向"编程"这个垂直领域**的，才敢也才值得�
 
 ### 3.5 一览表
 
-| 维度 | Helixent（本节三工具） | Claude Code | OpenAI Codex | LangChain 通用 | 裸 bash/sed |
-| --- | --- | --- | --- | --- | --- |
-| 共享地基（路径/结果/截断） | ✅ `tool-utils`+`tool-result` | ✅（内置） | ✅（内置） | ❌ 各写各的 | ❌ 无 |
-| 编辑粒度档位 | 3 档（write/replace/patch） | 2~3 档 | 主打 patch | 由使用者定 | 由命令定 |
-| 唯一匹配 | 软约束（提示词+count） | 硬校验（报错） | patch 硬校验 | 无 | 无 |
-| 结构化结果+错误码 | ✅ | ✅ | ✅ | 视实现 | ❌ |
-| 上下文节流（截断） | ✅ 两级截断 | ✅ | ✅ | 需自己做 | ❌ |
-| 读文件是否原样吐 | ✅（刻意破例） | ✅ | ✅ | 视实现 | ✅（cat） |
+| 维度                       | Helixent（本节三工具）           | Claude Code    | OpenAI Codex | LangChain 通用 | 裸 bash/sed |
+| -------------------------- | -------------------------------- | -------------- | ------------ | -------------- | ----------- |
+| 共享地基（路径/结果/截断） | ✅`tool-utils`+`tool-result` | ✅（内置）     | ✅（内置）   | ❌ 各写各的    | ❌ 无       |
+| 编辑粒度档位               | 3 档（write/replace/patch）      | 2~3 档         | 主打 patch   | 由使用者定     | 由命令定    |
+| 唯一匹配                   | 软约束（提示词+count）           | 硬校验（报错） | patch 硬校验 | 无             | 无          |
+| 结构化结果+错误码          | ✅                               | ✅             | ✅           | 视实现         | ❌          |
+| 上下文节流（截断）         | ✅ 两级截断                      | ✅             | ✅           | 需自己做       | ❌          |
+| 读文件是否原样吐           | ✅（刻意破例）                   | ✅             | ✅           | 视实现         | ✅（cat）   |
 
-***
+---
 
 ## 4. 深度解释：为什么这样设计？不这样会怎样？
 
@@ -581,7 +575,6 @@ export function inferToolErrorKind(code?: string): ToolErrorKind {
 
 ### Q5：`str_replace` 里"先数一遍出现次数、再执行替换"是不是多余？直接 replace 不行吗？
 
-**不多余——那一遍"数数"是为了在"什么都没改"时给模型一个明确的失败/无操作信号。**
 
 如果**直接 replace**（`text.split(old).join(new)`）而不先数：当 `old` 在文件里**一次都不出现**时，`split` 会返回 `[整个文件]`、`join` 拼回原文——**结果和原文一模一样，替换悄无声息地"什么都没干"**。工具会返回"成功"，但模型**根本不知道它的 `old` 抄错了**、以为改成功了，继续往下走——这是很隐蔽的 bug 温床。
 
@@ -605,11 +598,12 @@ export function inferToolErrorKind(code?: string): ToolErrorKind {
 
 **这对读者的启示有两点**：其一，**别把"函数存在"等同于"功能启用"**——读源码要追到"谁调用了它"，否则会高估系统的能力。其二，这是真实项目**渐进演进**的正常痕迹：地基常常先于使用者落地。我在正文 1.2 明确标注了它"未接入"，就是不想让你误以为本节的写工具有沙箱保护。**诚实地区分"设计意图"（roadmap 说的三件套）和"当前实现"（isWithinDirectory 尚未启用），比囫囵背下"有三件套"更有价值。**
 
-***
+---
 
 ## 5. 参考资料
 
 **本节精讲的源码（两块地基 + 三个文件工具）**：
+
 - 地基一 · 路径与截断：[tool-utils.ts](../../src/coding/tools/tool-utils.ts)（`ensureAbsolutePath` [L4-L9](../../src/coding/tools/tool-utils.ts#L4-L9)、`ensureDirectoryPath` [L11-L30](../../src/coding/tools/tool-utils.ts#L11-L30)、`isWithinDirectory` [L32-L35](../../src/coding/tools/tool-utils.ts#L32-L35)、`truncateText` [L37-L45](../../src/coding/tools/tool-utils.ts#L37-L45)）
 - 地基二 · 结果封装：[tool-result.ts](../../src/coding/tools/tool-result.ts)（`okToolResult` [L5-L7](../../src/coding/tools/tool-result.ts#L5-L7)、`errorToolResult` [L9-L16](../../src/coding/tools/tool-result.ts#L9-L16)）
 - 读：[read-file.ts](../../src/coding/tools/read-file.ts)（四道关卡 [L22-L52](../../src/coding/tools/read-file.ts#L22-L52)、行号/截断 [L54-L56](../../src/coding/tools/read-file.ts#L54-L56)、原文特例 [L57-L62](../../src/coding/tools/read-file.ts#L57-L62)）
@@ -617,29 +611,33 @@ export function inferToolErrorKind(code?: string): ToolErrorKind {
 - 替换：[str-replace.ts](../../src/coding/tools/str-replace.ts)（计数 [L51-L63](../../src/coding/tools/str-replace.ts#L51-L63)、执行 [L65-L75](../../src/coding/tools/str-replace.ts#L65-L75)、空转与写盘 [L77-L95](../../src/coding/tools/str-replace.ts#L77-L95)）
 
 **co-located 测试（第 21 节会讲这套约定）**：
+
 - [tool-utils.test.ts](../../src/coding/tools/__tests__/tool-utils.test.ts)（含 `okToolResult`/`errorToolResult`/`truncateText` 的形状断言）
 - [read-file.test.ts](../../src/coding/tools/__tests__/read-file.test.ts)（原文读 vs 范围读 vs 结构化错误）
 - [write-file.test.ts](../../src/coding/tools/__tests__/write-file.test.ts)（覆盖写、深层建目录、相对路径报错）
 - [str-replace.test.ts](../../src/coding/tools/__tests__/str-replace.test.ts)（全替/限量/count=0/未找到/空 old/相对路径六种情形）
 
 **上游依赖章节**：
+
 - [第 4 节 · Tool 工具系统](./04-tool.md)：`defineTool` 与 `StructuredToolResult` 契约（本节的 `okToolResult`/`errorToolResult` 是它的落地）
 - [第 8 节 · 工具结果处理管线](./08-tool-result-pipeline.md)：`normalizeToolResult`、`inferToolErrorKind`、`formatToolResultForMessage`（本节工具是它的上游生产者，`read_file` 特判是它俩的配对点）
 - [第 11 节 · Lead Agent](./11-lead-agent.md)：这些工具被装配进 `tools` 数组、`<tool_usage>` 对它们的行为约束、`CODING_TOOLS_REQUIRING_APPROVAL` 名单
 
 **关联源码（本节引用但不精讲）**：
+
 - 契约源头：[structured-tool-result.ts](../../src/foundation/tools/structured-tool-result.ts)
 - 截断策略：[tool-result-policy.ts](../../src/agent/tool-result-policy.ts)、结果格式化：[tool-result-runtime.ts](../../src/agent/tool-result-runtime.ts)
 - 复用 `ensureDirectoryPath` 的第 13 节工具：[list-files.ts](../../src/coding/tools/list-files.ts#L44)、[glob-search.ts](../../src/coding/tools/glob-search.ts#L24)、[grep-search.ts](../../src/coding/tools/grep-search.ts#L26)
 - 工具编写规范：[code-convention.md](../code-convention.md)（`description` 第一参数、错误码约定、`ensureAbsolutePath` 强制用等）
 
 **外部资料**：
-- Bun 文件 I/O（`Bun.file` / `file.text()` / `file.write()`）：<https://bun.sh/docs/api/file-io>
-- Node.js `path` 模块（`relative`/`resolve`/`parse`/`sep`，本节 `isWithinDirectory`/`write_file` 用到）：<https://nodejs.org/api/path.html>
-- Zod schema 校验（`z.number().int().positive()` 等链式约束）：<https://zod.dev/>
-- 路径穿越攻击（Path Traversal）与防御（`isWithinDirectory` 的设计动机）：<https://owasp.org/www-community/attacks/Path_Traversal>
 
-***
+- Bun 文件 I/O（`Bun.file` / `file.text()` / `file.write()`）：[https://bun.sh/docs/api/file-io](https://bun.sh/docs/api/file-io)
+- Node.js `path` 模块（`relative`/`resolve`/`parse`/`sep`，本节 `isWithinDirectory`/`write_file` 用到）：[https://nodejs.org/api/path.html](https://nodejs.org/api/path.html)
+- Zod schema 校验（`z.number().int().positive()` 等链式约束）：[https://zod.dev/](https://zod.dev/)
+- 路径穿越攻击（Path Traversal）与防御（`isWithinDirectory` 的设计动机）：[https://owasp.org/www-community/attacks/Path_Traversal](https://owasp.org/www-community/attacks/Path_Traversal)
+
+---
 
 ## 6. 小结与下一节预告
 

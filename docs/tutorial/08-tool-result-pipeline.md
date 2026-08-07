@@ -4,11 +4,12 @@
 >
 > 对应 roadmap 为本节设定的**核心问题**：
 >
-> > 第 6 节工具返回的五花八门的结果，如何统一成喂给模型的字符串？如何防止上下文被撑爆？
+>> 第 6 节工具返回的五花八门的结果，如何统一成喂给模型的字符串？如何防止上下文被撑爆？
+>>
 >
 > **一句边界声明**：本节精讲**三个文件**——归一化与格式化的 [tool-result-runtime.ts](../../src/agent/tool-result-runtime.ts)（187 行）、按工具分级的截断策略 [tool-result-policy.ts](../../src/agent/tool-result-policy.ts)（45 行）、给 UI 用的轻量摘要器 [tool-result-summary.ts](../../src/agent/tool-result-summary.ts)（28 行）。这三个文件加起来不到 260 行，却是「让 Agent 循环在真实世界里不崩」的关键一环。至于结果**从哪来**（工具的 `invoke` 返回值）是 [第 4 节](./04-tool.md) 和 [第 12～14 节](./00-roadmap.md) 的主题，结果**到哪去后怎么渲染**（TUI 消费 `summarizeToolResultText`）是 [第 20 节](./00-roadmap.md) 的主题，本节只负责中间那段「归一化 → 按策略截断 → 序列化」的**管线**本身。
 
-***
+---
 
 ## 0. 承上启下
 
@@ -48,7 +49,7 @@ const toolMessage: ToolMessage = {
 
 第 7 节的中间件是「往循环里**插**行为」；本节的管线则是「把循环**产出的数据**收拾干净」。它不走 `beforeToolUse` 那条中间件路径，而是在 `_act` 收割结果时被**直接调用**——但它同样是「让 Agent 稳健运转」不可或缺的一环。打开这三个文件，我们开始。
 
-***
+---
 
 ## 1. 主题内容
 
@@ -194,6 +195,7 @@ export type ToolErrorKind =
 这是一个「**约定优于配置（Convention over Configuration）**」的漂亮示范：与其维护一张「错误码 → 类别」的巨表（每加一个码就得改表，还容易漏），不如**让错误码的名字自己携带分类信息**，用前后缀模式一网打尽。
 
 > **两个值得玩味的细节**：
+>
 > - `RG_NOT_FOUND` 被**单独**用 `===` 精确匹配成 `environment_missing`，而**没有**让它落进后面的 `_NOT_FOUND`（那会错归成 `not_found`）。这是因为 `RG_NOT_FOUND` 的语义是「**ripgrep 这个程序没装**」（环境缺失），而不是「**要找的文件不存在**」（not_found）——名字撞了 `_NOT_FOUND` 后缀，但语义完全不同。**所以精确匹配必须排在后缀匹配之前**——顺序又一次成了正确性的关键。`FILE_NOT_FOUND` 也被显式 `===` 列出（虽然它其实也满足 `endsWith("_NOT_FOUND")`），是为了**可读性**：把最常见的那个错误码摆在明面上。
 > - `errorKind` 目前**只在归一化结果里挂着**，`formatToolResultForMessage` 并没有把它拼进给模型的字符串（1.5 会看到，喂给模型的只有 `summary`/`error`/`code`）。那它有什么用？它是一个**面向未来的分类维度**——留给「按错误类别做重试策略」（比如 `environment_missing` 不该重试，`execution_failed` 可以重试一次）、「按类别统计打点」、「UI 按类别显示不同图标」等场景。**先把分类能力做进数据模型，具体消费留给未来**——这是一种有远见的「留钩子」。
 
@@ -225,12 +227,12 @@ export function getToolResultPolicy(toolName: string): ToolResultPolicy {
 
 `ToolResultPolicy` 的四个字段（[tool-result-policy.ts](../../src/agent/tool-result-policy.ts#L1-L6)）含义：
 
-| 字段 | 含义 | 谁在读它 |
-| --- | --- | --- |
-| `preferSummaryOnly` | 只回 `summary`、**丢掉 `data`** | `formatToolResultForMessage`（喂模型） |
-| `includeData` | 是否允许带 `data` | `formatToolResultForMessage`（喂模型） |
-| `maxStringLength` | 序列化后的字符上限 | `stringifyWithinLimit`（截断） |
-| `uiSummaryOnly` | **给 UI 用**：终端里也只显示摘要 | 第 20 节的 TUI 渲染器 |
+| 字段                  | 含义                                     | 谁在读它                                 |
+| --------------------- | ---------------------------------------- | ---------------------------------------- |
+| `preferSummaryOnly` | 只回`summary`、**丢掉 `data`** | `formatToolResultForMessage`（喂模型） |
+| `includeData`       | 是否允许带`data`                       | `formatToolResultForMessage`（喂模型） |
+| `maxStringLength`   | 序列化后的字符上限                       | `stringifyWithinLimit`（截断）         |
+| `uiSummaryOnly`     | **给 UI 用**：终端里也只显示摘要   | 第 20 节的 TUI 渲染器                    |
 
 把这张表**按「工具的性质」分组**来读，设计意图就浮现了——**这是按「结果对模型的价值密度」分级**：
 
@@ -377,6 +379,7 @@ export function summarizeToolResultText(content: string): string | null {
 **② 失败时优先用 `summary`、退而用 `error`。** 看分支 ③：`message` 先取 `summary`（更适合人读的那句），没有再取 `error`（更原始），都没有才用 `content` 兜底。这个「优先级取值」保证 UI 上显示的永远是**最适合人读**的那个版本。测试 `"prefers summary over error for the message"` 精确锁定了这个偏好（[tool-result-summary.test.ts](../../src/agent/__tests__/tool-result-summary.test.ts#L37-L41)）。
 
 **③ 为什么给模型和给 UI 是两套函数、两种「详略」？** 因为**受众不同，需求不同**：
+
 - **模型**需要**结构化、可解析、够全**的信息——所以主管线给它一个带 `ok`/`error`/`code`/`data` 的 JSON，让它能精确判断成败、读取数据。
 - **人**需要**一眼看懂、越短越好**的信息——所以这条旁路只给一句「找到 3 个文件」或「Error [RG_NOT_FOUND]: ...」，那些 `ok`、`data` 对着屏幕的人类是噪音。
 
@@ -411,56 +414,47 @@ _act 收割 (第 6 节) ──► formatToolResultForMessage({ toolName, result 
 
 **三个文件各司其职**：normalize 管「形态统一」、policy 管「分级裁剪」、format（含 `stringifyWithinLimit`）管「安全落地」，summary 管「给人看的旁路」。它们合起来回答了 roadmap 的核心问题：**五花八门的结果，先归一成统一形状，再按工具性质分级截断，最后安全序列化成一个既喂得了模型、又撑不爆上下文的字符串。**
 
-***
+---
 
 ## 2. 亮点与关键设计
 
 1. **normalize 用「运行时类型守卫 + 有序 if 瀑布」把五类形态归一。**
    `isStructuredToolSuccess`/`isStructuredToolError` 逐字段验形（不轻信 `unknown` 的形状）；四个分支**按优先级排序**——先认结构化对象，认不出才退化到「靠 `Error:` 前缀猜」，最后一切兜底为「成功裸值」。**顺序即正确性**：结构化优先于字符串猜测，避免 `summary` 恰好以 `Error:` 开头的对象被误判。
-
 2. **`inferToolErrorKind` 靠「命名规约」而非「巨型映射表」分类错误。**
    `INVALID_` 前缀、`_NOT_SUPPORTED`/`_NOT_FOUND`/`_FAILED` 后缀 → 6 个错误大类。新增错误码只要遵守命名约定就自动归类，无需改这个函数——「约定优于配置」的典范。`RG_NOT_FOUND` 用 `===` 精确匹配抢在 `_NOT_FOUND` 后缀之前，是「语义 > 字面」的细节。
-
 3. **policy 把「结果对模型的价值密度」编码成一张分级表。**
    探索类（`list_files`/`grep` 等）`preferSummaryOnly + 上限1000`——只回摘要、丢 data，防撑爆主力；`read_file` `带data + 上限12000`（与工具自身的 `DEFAULT_MAX_CHARS` 对齐）；写入类与默认 4000。**按工具性质分级，而非一刀切。**
-
 4. **`formatToolResultForMessage` 给 `read_file` 开「直通车」。**
    文件正文原样返回、完全不进管线——避免被 `JSON.stringify` 转义污染、避免以 `Error:` 开头的文件内容被误判为错误、且工具自己已截断过。最有价值的数据享受零加工。
-
 5. **`stringifyWithinLimit` 用「三级降级 + 先构造小对象再序列化」保证截断永不产出坏 JSON。**
    从不 `slice` 一个已序列化的 JSON；而是「完整版 → 兜底版（丢 data） → slice 纯字符串字段后重新包壳」逐级降级，每级产物都合法。`maxLength - 32/64` 为 JSON 结构字符预留余量。配套 `truncateSummary` 用 `... [truncated N chars]` 明示截断，对模型诚实。
-
 6. **`stringifyValue` 用 `try/catch` 包住 `JSON.stringify`，确保格式化函数永不抛异常。**
    循环引用只得到 `"[unserializable object]"`，绝不搞崩正在收割结果的主循环——「辅助函数不该有能力让核心崩溃」。
-
 7. **给模型（`formatToolResultForMessage`）与给人（`summarizeToolResultText`）是两条独立管线。**
    模型要「结构化、可解析、够全」的 JSON；人要「一眼看懂、越短越好」的一句话。`summarizeToolResultText` 返回 `string | null`，把「无法摘要」的兜底权交还 UI。配合 policy 的 `uiSummaryOnly` 字段，实现终端「探索类工具只闪一句摘要」。
 
-***
+---
 
 ## 3. 工业对比
 
 把 Helixent 的工具结果处理，与业界几种主流 Agent 框架的做法放一起看：
 
-| 维度 | Helixent | LangChain (Tool `ToolMessage`) | OpenAI Agents SDK | Vercel AI SDK |
-| --- | --- | --- | --- | --- |
-| 结果的统一形态 | **归一成 `{ok,summary,error,code,data}`** 结构化契约 | `ToolMessage.content`（字符串/内容块），无强制结构 | 工具返回值经 `str()` 或结构化输出 | `tool result` 对象，交由模型格式化 |
-| 上下文防撑爆 | **按工具名分级截断**（policy 表 + 三级降级） | 多靠开发者在工具内自己截断 | 开发者自理 / 靠模型 max_tokens | 开发者自理 |
-| 错误处理 | **归一 + `errorKind` 分类**，错误变「可读观察」喂回模型 | 异常可配置为返回给模型或抛出 | 工具异常可返回给模型 | `experimental_toToolResultContent` 定制 |
-| 给模型 vs 给 UI | **两条独立管线**（详略不同） | 通常同一份 content | 通常同一份 | 通常同一份 |
-| 截断安全性 | **保证产出合法 JSON**（先构小对象再序列化） | 无框架级保证 | 无框架级保证 | 无框架级保证 |
+| 维度            | Helixent                                                        | LangChain (Tool`ToolMessage`)                      | OpenAI Agents SDK                  | Vercel AI SDK                             |
+| --------------- | --------------------------------------------------------------- | ---------------------------------------------------- | ---------------------------------- | ----------------------------------------- |
+| 结果的统一形态  | **归一成 `{ok,summary,error,code,data}`** 结构化契约    | `ToolMessage.content`（字符串/内容块），无强制结构 | 工具返回值经`str()` 或结构化输出 | `tool result` 对象，交由模型格式化      |
+| 上下文防撑爆    | **按工具名分级截断**（policy 表 + 三级降级）              | 多靠开发者在工具内自己截断                           | 开发者自理 / 靠模型 max_tokens     | 开发者自理                                |
+| 错误处理        | **归一 + `errorKind` 分类**，错误变「可读观察」喂回模型 | 异常可配置为返回给模型或抛出                         | 工具异常可返回给模型               | `experimental_toToolResultContent` 定制 |
+| 给模型 vs 给 UI | **两条独立管线**（详略不同）                              | 通常同一份 content                                   | 通常同一份                         | 通常同一份                                |
+| 截断安全性      | **保证产出合法 JSON**（先构小对象再序列化）               | 无框架级保证                                         | 无框架级保证                       | 无框架级保证                              |
 
 几点读法：
 
 - **「按工具分级截断」是 Helixent 相对少见的深耕点。** 多数框架把「结果太大怎么办」丢给开发者（在工具里自己截）或丢给模型（靠 `max_tokens` 硬砍）。Helixent 在**框架层**用一张 policy 表统一处理，且区分了「探索类只回摘要」和「读文件类保留内容」——这种「按结果的价值密度分级」的细腻度，是它作为「教学样本」特别值得学的地方。代价是这张表是**硬编码**的（深度解释 Q3 会讨论）。
-
 - **「结果归一 + 错误分类」体现了「把工具结果当一等数据」的态度。** 很多框架里，工具结果就是一坨塞进消息的字符串。Helixent 把它建模成 `NormalizedToolResult`（带 `ok`/`errorKind`/`raw`），让「成败」「错误类别」「原始值」都成为可编程的维度。这和 LangChain 后来引入的 `ToolMessage.status`（success/error）是同一方向，但 Helixent 的 `errorKind` 分得更细。
-
 - **「给模型」与「给 UI」分离，是 CLI/TUI 类产品特有的讲究。** 纯 API 场景（没有终端 UI）的框架通常不需要这条旁路。Helixent 因为要在终端里「好看地」展示工具调用（第 20 节），才需要 `summarizeToolResultText` 这条给人看的旁路——这是「它同时是框架**和** CLI 工具」这一双重身份的自然产物。
-
 - **共同趋势**：无论哪个框架，「工具结果要经过一层加工才喂回模型」已是共识——区别只在加工的**深度**。Helixent 处在「较深」的一端：归一化 + 分类 + 分级截断 + 安全序列化，四道工序俱全，且都做在不到 260 行里。
 
-***
+---
 
 ## 4. 深度解释：为什么这样设计？不这样会怎样？
 
@@ -482,7 +476,7 @@ _act 收割 (第 6 节) ──► formatToolResultForMessage({ toolName, result 
 **Q6：`summarizeToolResultText` 遇到不认识的格式返回 `null`，为什么不干脆返回原始 `content`（至少 UI 有东西显示）？**
 返回 `null` 是**把「兜底策略」的决定权交还给更了解显示语境的调用方**，这比在这个底层函数里硬编一个兜底更灵活。想清楚：`summarizeToolResultText` 是一个**纯粹的「提炼」函数**，它的契约是「我尽力从这段文本里**提炼**出一句适合人看的摘要；提炼不出来，我诚实地告诉你 `null`」。而「提炼不出来时该显示什么」，是一个**UI 层的决策**——第 20 节的 TUI 可能想「显示原文前 80 字」、可能想「显示灰色的『(结果无摘要)』」、可能想「干脆折叠不显示」。这些选择依赖于**终端宽度、主题、上下文**等只有 UI 层才知道的信息。如果 `summarizeToolResultText` 直接返回原始 `content` 兜底，就等于**替 UI 做了「显示全部原文」这个决定**——而原始 content 可能是一大坨 JSON 或几千字符的输出，直接刷屏，未必是 UI 想要的。**返回 `null`（一个明确的「我不知道」信号）比返回一个「可能不合适的默认值」更负责任**——这和 1.6 说的「诚实的『我不知道』」以及第 15 节 Manager「把决定权交给上层」是同一种「底层只提供能力、决策留给更懂语境的上层」的分层哲学。
 
-***
+---
 
 ## 5. 参考资料
 
@@ -494,13 +488,13 @@ _act 收割 (第 6 节) ──► formatToolResultForMessage({ toolName, result 
 - 结果的几种来源（第 12～14 节预习）：[read-file.ts 返回裸文本](../../src/coding/tools/read-file.ts#L59-L62)、[read-file.ts `DEFAULT_MAX_CHARS=12000`](../../src/coding/tools/read-file.ts#L8)、[bash.ts 成功返回 stdout / 失败返回 `Error:`](../../src/coding/tools/bash.ts#L30-L34)、[tool-utils.ts `truncateText`](../../src/coding/tools/tool-utils.ts#L37-L45)
 - 结果的落点类型（第 2 节）：[content.ts `ToolResultContent`](../../src/foundation/messages/types/content.ts#L59-L65)
 - 三个文件的测试（可作为「可执行的规格说明」对照阅读）：[tool-result-runtime.test.ts](../../src/agent/__tests__/tool-result-runtime.test.ts)、[tool-result-policy.test.ts](../../src/agent/__tests__/tool-result-policy.test.ts)、[tool-result-summary.test.ts](../../src/agent/__tests__/tool-result-summary.test.ts)
-- MDN · `JSON.stringify()`（及其在循环引用时抛错的行为）：<https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/JSON/stringify>
-- MDN · `String.prototype.startsWith` / `endsWith`（`inferToolErrorKind` 的前后缀匹配）：<https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String/startsWith>
-- TypeScript 手册 · 用户自定义类型守卫（`value is T`）：<https://www.typescriptlang.org/docs/handbook/2/narrowing.html#using-type-predicates>
-- 「约定优于配置」（Convention over Configuration）：<https://en.wikipedia.org/wiki/Convention_over_configuration>
+- MDN · `JSON.stringify()`（及其在循环引用时抛错的行为）：[https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/JSON/stringify](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/JSON/stringify)
+- MDN · `String.prototype.startsWith` / `endsWith`（`inferToolErrorKind` 的前后缀匹配）：[https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String/startsWith](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String/startsWith)
+- TypeScript 手册 · 用户自定义类型守卫（`value is T`）：[https://www.typescriptlang.org/docs/handbook/2/narrowing.html#using-type-predicates](https://www.typescriptlang.org/docs/handbook/2/narrowing.html#using-type-predicates)
+- 「约定优于配置」（Convention over Configuration）：[https://en.wikipedia.org/wiki/Convention_over_configuration](https://en.wikipedia.org/wiki/Convention_over_configuration)
 - 上游依赖：[第 4 节 · Tool 工具系统](./04-tool.md)、[第 6 节 · 并行工具调度](./06-parallel-tools.md)、[第 7 节 · Middleware 中间件系统](./07-middleware.md)
 
-***
+---
 
 ## 6. 小结与下一节预告
 

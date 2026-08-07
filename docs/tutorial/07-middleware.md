@@ -4,11 +4,12 @@
 >
 > 对应 roadmap 为本节设定的**核心问题**：
 >
-> > 如何在不改 Agent 核心代码的前提下，插入审批、技能注入、待办提醒等行为？
+>> 如何在不改 Agent 核心代码的前提下，插入审批、技能注入、待办提醒等行为？
+>>
 >
 > **一句边界声明**：本节只精讲**两处**——中间件的**类型契约**（[agent-middleware.ts](../../src/agent/agent-middleware.ts)，139 行）和主循环里的**钩子分发逻辑**（[agent.ts](../../src/agent/agent.ts#L278-L360) 那 8 个 `_beforeX/_afterX` 私有方法）。至于插在这些钩子上的三个**具体插件**——结果处理管线、Skills、Todos——分别是 [第 8](./00-roadmap.md)、[第 9](./00-roadmap.md)、[第 10 节](./00-roadmap.md) 的主题；审批与提问是 [第 15 节](./00-roadmap.md) 的主题。本节只把它们当「用来演示钩子怎么被使用」的例子，点到为止，不展开其内部实现。
 
-***
+---
 
 ## 0. 承上启下
 
@@ -48,7 +49,7 @@ for (step = 1..maxSteps):
 
 读本节时，建议把这两处并排打开。你会发现一个惊人的事实：**整个「中间件系统」没有任何框架、没有注册表、没有优先级排序、没有生命周期管理器——它就是「一个接口 + 8 个几乎复制粘贴的 for 循环」。** 它的全部威力，来自一个极简到近乎「作弊」的约定。我们这一节就是要说清：**这个约定是什么，为什么它足够，以及为什么「少即是多」。**
 
-***
+---
 
 ## 1. 主题内容
 
@@ -114,12 +115,12 @@ afterAgentRun（无工具时才触发，见下）──────────�
 
 四对钩子，对应四个「作用域」，由外到内：
 
-| 钩子对 | 触发时机 | 一句话用途 | 谁在用（本节仅举例） |
-| --- | --- | --- | --- |
-| `beforeAgentRun` / `afterAgentRun` | 整轮运行的**最外层**（`stream` 开头 / 正常停机时） | 一次性的准备与收尾 | Skills 在 `beforeAgentRun` 扫描技能目录 |
-| `beforeAgentStep` / `afterAgentStep` | **每一步**的首尾 | 按步计数、按步注入 | （计步类逻辑） |
-| `beforeModel` / `afterModel` | **调模型**前后 | 改 prompt、改模型输出 | Skills / Todos 在 `beforeModel` 往 prompt 注入内容 |
-| `beforeToolUse` / `afterToolUse` | **每个工具**执行前后 | 拦截工具、观察结果 | 审批在 `beforeToolUse` 短路；Todos 在 `afterToolUse` 计步 |
+| 钩子对                                   | 触发时机                                                   | 一句话用途            | 谁在用（本节仅举例）                                         |
+| ---------------------------------------- | ---------------------------------------------------------- | --------------------- | ------------------------------------------------------------ |
+| `beforeAgentRun` / `afterAgentRun`   | 整轮运行的**最外层**（`stream` 开头 / 正常停机时） | 一次性的准备与收尾    | Skills 在`beforeAgentRun` 扫描技能目录                     |
+| `beforeAgentStep` / `afterAgentStep` | **每一步**的首尾                                     | 按步计数、按步注入    | （计步类逻辑）                                               |
+| `beforeModel` / `afterModel`         | **调模型**前后                                       | 改 prompt、改模型输出 | Skills / Todos 在`beforeModel` 往 prompt 注入内容          |
+| `beforeToolUse` / `afterToolUse`     | **每个工具**执行前后                                 | 拦截工具、观察结果    | 审批在`beforeToolUse` 短路；Todos 在 `afterToolUse` 计步 |
 
 > ⚠️ **一个必须现在就厘清的「作用域嵌套 ≠ 完全对称」问题**：`beforeAgentRun` 和 `afterAgentRun` 看着像一对括号，但它们**并不严格配对**。看主循环（[agent.ts](../../src/agent/agent.ts#L158-L161)）：`afterAgentRun` **只在「模型这一步没有产出任何工具调用、于是正常停机」时才触发**。如果 Agent 是因为「达到 maxSteps 上限」而抛错退出的（[agent.ts](../../src/agent/agent.ts#L166)），`afterAgentRun` **不会被调用**。这一点在 `agent-middleware.ts` 的注释里写得很清楚（[agent-middleware.ts](../../src/agent/agent-middleware.ts#L101-L107)）：「this hook is **not** called if the agent throws (e.g. max steps reached)」。所以别把它当成「一定会执行的 finally」——它是「优雅收尾钩子」，不是「兜底清理钩子」。这个细节深度解释 Q4 会再钉一遍。
 
@@ -184,16 +185,16 @@ private async _beforeAgentRun() {
 
 现在看其余 7 个方法。它们和上面这个模板的差异**小到可以忽略**，只在三处微调：
 
-| 方法 | 遍历的钩子 | 传入的参数 | `Object.assign` 的目标 |
-| --- | --- | --- | --- |
-| `_beforeAgentRun` | `beforeAgentRun` | `{ agentContext }` | `this._context` |
-| `_afterAgentRun` | `afterAgentRun` | `{ agentContext }` | `this._context` |
-| `_beforeAgentStep(step)` | `beforeAgentStep` | `{ agentContext, step }` | `this._context` |
-| `_afterAgentStep(step)` | `afterAgentStep` | `{ agentContext, step }` | `this._context` |
-| `_beforeModel(modelContext)` | `beforeModel` | `{ modelContext, agentContext }` | **`modelContext`** |
-| `_afterModel(message)` | `afterModel` | `{ agentContext, message }` | **`message`** |
-| `_beforeToolUse(toolUse)` | `beforeToolUse` | `{ agentContext, toolUse }` | `this._context`（**但有短路分支，见 1.6**） |
-| `_afterToolUse(toolUse, result)` | `afterToolUse` | `{ agentContext, toolUse, toolResult }` | `this._context` |
+| 方法                               | 遍历的钩子          | 传入的参数                                | `Object.assign` 的目标                            |
+| ---------------------------------- | ------------------- | ----------------------------------------- | --------------------------------------------------- |
+| `_beforeAgentRun`                | `beforeAgentRun`  | `{ agentContext }`                      | `this._context`                                   |
+| `_afterAgentRun`                 | `afterAgentRun`   | `{ agentContext }`                      | `this._context`                                   |
+| `_beforeAgentStep(step)`         | `beforeAgentStep` | `{ agentContext, step }`                | `this._context`                                   |
+| `_afterAgentStep(step)`          | `afterAgentStep`  | `{ agentContext, step }`                | `this._context`                                   |
+| `_beforeModel(modelContext)`     | `beforeModel`     | `{ modelContext, agentContext }`        | **`modelContext`**                          |
+| `_afterModel(message)`           | `afterModel`      | `{ agentContext, message }`             | **`message`**                               |
+| `_beforeToolUse(toolUse)`        | `beforeToolUse`   | `{ agentContext, toolUse }`             | `this._context`（**但有短路分支，见 1.6**） |
+| `_afterToolUse(toolUse, result)` | `afterToolUse`    | `{ agentContext, toolUse, toolResult }` | `this._context`                                   |
 
 看出来了吗？**除了 `_beforeModel` 合并进 `modelContext`、`_afterModel` 合并进 `message`、`_beforeToolUse` 多了个短路分支，其余全是把同一个模板换个钩子名、换个参数。** 举两个例子对照，你能立刻确认这种「同构」：
 
@@ -347,41 +348,36 @@ afterToolUse  ── [Todos 重置计步器]
 
 **这四个中间件（还有第 8 节的结果处理，虽然它走的是另一条路径）互不知道彼此的存在，却能在同一台 Agent 上和谐共存、按数组顺序叠加生效。** 想加一个新行为？写一个新的 `AgentMiddleware` 对象，塞进 `middlewares` 数组即可（第 11 节的 `createCodingAgent` 就是这么装配的，[lead-agent.ts](../../src/coding/agents/lead-agent.ts#L66-L76)）。`agent.ts` 永远不用动。**这就是本节要证明的命题：一个封闭的循环，靠 8 个钩子 + 一个极简协议，变成了一个开放的平台。**
 
-***
+---
 
 ## 2. 亮点与关键设计
 
 1. **「一个可选接口 + 8 个几乎复制粘贴的 for 循环」= 整个中间件系统。**
    没有框架、没有注册表、没有优先级排序、没有洋葱模型。8 个 `_beforeX/_afterX`（[agent.ts](../../src/agent/agent.ts#L278-L360)）都是同一个模板：`遍历 middlewares → 跳过没实现的 → 顺序 await 调用 → Object.assign 合并返回值`。核心循环只负责「到点喊一嗓子」，谁响应、做什么，核心一概不管。极简到近乎「作弊」，却完全够用。
-
 2. **「返回 `Partial` 则 `Object.assign` 合并，返回 falsy 则无操作」——用一个返回值当全部 API。**
    这个协议同时解决了三件事：统一了「观察」（返回 void）与「修改」（返回 Partial）两种意图；是「增量合并」（中间件只声明自己关心的字段）；天然支持「链式叠加」（顺序 for + 就地 Object.assign，后面的中间件看到前面的成果）。不需要事件、不需要 `next()` 回调——**返回值即协议**。
-
 3. **「返回什么类型，就只能改什么对象」——类型系统框定每个钩子的能力边界。**
    `beforeModel` 返回 `Partial<ModelContext>`（能改 prompt），`afterModel` 返回 `Partial<AssistantMessage>`（能改模型输出），其余返回 `Partial<AgentContext>`。分发端对应地把返回值 `Object.assign` 进 `modelContext` / `message` / `this._context` 三个不同目标。类型和分发目标严格对应，让「每个时刻能动什么」一目了然。
-
 4. **`beforeToolUse` 的「短路跳过」信号——审批系统的地基。**
    唯一一个有第三态返回的钩子：`{ __skip: true, result }` 让中间件能「代替工具作答」，在工具根本不执行的前提下凭空给结果。分发端用 `"__skip" in result` 检测、提前 `return` 中断中间件链，并把魔法字段翻译成 `{ skip, result }` 朴素对象交给 `_act`。审批的「同意/拒绝」正是靠「无操作 / 短路」两态在 20 行里实现的，`agent.ts` 一字不改。
-
 5. **4 对钩子「包住」循环的 4 个作用域，但 `afterAgentRun` 刻意不对称。**
    run / step / model / toolUse 四层由外到内嵌套。但 `afterAgentRun` **只在「无工具调用而正常停机」时触发**，达到 maxSteps 抛错退出时**不触发**——它是「优雅收尾钩子」，不是「兜底 finally」。这个不对称是有意的语义选择（深度解释 Q4）。
-
 6. **中间件让「通用大脑」与「场景逻辑」彻底解耦。**
    `agent.ts` 是通用 ReAct 循环，它不知道「`bash` 是危险命令」「有个叫 skills 的东西」——这些 coding 专用逻辑全被隔离在独立的中间件里，通过数组注入。同一个 Agent 换一组中间件就能变成客服机器人。这是第 1 节「严格分层」思想在扩展性维度上的延续。
 
-***
+---
 
 ## 3. 工业对比
 
 把 Helixent 的中间件系统与业界几种「给 Agent/请求管线加扩展点」的主流方案放一起看：
 
-| 维度 | Helixent | Express/Koa 中间件 | LangChain Callbacks | OpenAI Agents SDK (Hooks/Guardrails) |
-| --- | --- | --- | --- | --- |
-| 扩展点形态 | **8 个具名生命周期钩子**（可选实现） | 单一 `(req, res, next)` 洋葱链 | 十几个 `on_xxx` 事件回调 | `RunHooks` 生命周期 + `Guardrails` 拦截 |
-| 控制流模型 | 顺序 `await` for 循环，**无 `next()`** | **洋葱模型**：`next()` 显式下探再回溯 | 事件发射（observer），一般只读 | 生命周期回调 + guardrail 可抛出中断 |
-| 如何「修改」 | **返回 `Partial` → `Object.assign` 合并** | 直接改 `req`/`res` 对象（副作用） | 多为只读观察，改动能力弱 | hooks 可改上下文，guardrail 决定放行 |
-| 如何「拦截/短路」 | **`beforeToolUse` 返回 `{ __skip, result }`** | 不调用 `next()`（洋葱截断） | 一般不支持拦截 | **Guardrail** 触发 tripwire 中断 |
-| 复杂度 | **极低**（一个接口 + 8 个 for 循环） | 中（洋葱语义需理解 `next` 前后） | 高（回调种类多、参数杂） | 中高（hooks + guardrails 两套机制） |
+| 维度              | Helixent                                                | Express/Koa 中间件                            | LangChain Callbacks            | OpenAI Agents SDK (Hooks/Guardrails)        |
+| ----------------- | ------------------------------------------------------- | --------------------------------------------- | ------------------------------ | ------------------------------------------- |
+| 扩展点形态        | **8 个具名生命周期钩子**（可选实现）              | 单一`(req, res, next)` 洋葱链               | 十几个`on_xxx` 事件回调      | `RunHooks` 生命周期 + `Guardrails` 拦截 |
+| 控制流模型        | 顺序`await` for 循环，**无 `next()`**         | **洋葱模型**：`next()` 显式下探再回溯 | 事件发射（observer），一般只读 | 生命周期回调 + guardrail 可抛出中断         |
+| 如何「修改」      | **返回 `Partial` → `Object.assign` 合并**    | 直接改`req`/`res` 对象（副作用）          | 多为只读观察，改动能力弱       | hooks 可改上下文，guardrail 决定放行        |
+| 如何「拦截/短路」 | **`beforeToolUse` 返回 `{ __skip, result }`** | 不调用`next()`（洋葱截断）                  | 一般不支持拦截                 | **Guardrail** 触发 tripwire 中断      |
+| 复杂度            | **极低**（一个接口 + 8 个 for 循环）              | 中（洋葱语义需理解`next` 前后）             | 高（回调种类多、参数杂）       | 中高（hooks + guardrails 两套机制）         |
 
 几点读法：
 
@@ -390,7 +386,7 @@ afterToolUse  ── [Todos 重置计步器]
 - **和 OpenAI Agents SDK 的差异：Helixent 用「一个钩子的三态返回」统一了 hooks 和 guardrails。** OpenAI SDK 把「生命周期观察」（RunHooks）和「拦截/中断」（Guardrails）做成了**两套**机制。Helixent 则把「观察」（返回 void）、「修改」（返回 Partial）、「拦截」（返回 `__skip`）**压进同一个 `beforeToolUse` 的三态返回里**——概念更少，代价是「拦截」只在工具粒度可用（其他钩子没有短路能力）。对一个「工具执行」才是主要危险源的 coding agent 来说，这个取舍很合理。
 - **共同的行业趋势**：无论叫中间件、回调、还是钩子，「**给核心循环留一组具名扩展点，让横切关注点（审批、日志、注入、限流）以插件形式挂上去**」已是 Agent 框架的标配。Helixent 的价值在于用**最少的机制**（一个接口 + Object.assign 约定）覆盖了「观察 / 修改 / 拦截」三种核心需求，是「奥卡姆剃刀」在框架设计上的漂亮示范。
 
-***
+---
 
 ## 4. 深度解释：为什么这样设计？不这样会怎样？
 
@@ -412,7 +408,7 @@ afterToolUse  ── [Todos 重置计步器]
 **Q6：中间件是「顺序 await」执行的，如果某个中间件的钩子里有个很慢的 `await`（比如审批要等用户点几十秒），会不会阻塞整个 Agent？这是 bug 还是特性？**
 是**特性**，而且是刻意的。审批的本质就是「**停下来，等人类决定**」——在用户点「同意/拒绝」之前，这个工具**本就不该执行**，整个 Agent「卡住」正是我们想要的行为（[coding-approval-middleware.ts](../../src/coding/permissions/coding-approval-middleware.ts#L28) 那句 `await options.askUser(toolUse)` 会一直挂起，直到第 15 节的 Manager 收到用户的响应）。顺序 `await` 分发在这里恰好提供了「**天然的背压（backpressure）**」：慢钩子会让循环等它，而不需要任何额外的暂停/恢复机制。那会不会「误伤」——某个本应快的钩子因为写得烂而拖慢全局？会，但这属于「中间件作者的责任」，框架不该越俎代庖去并发执行钩子（并发反而会破坏 1.5 的「链式叠加」语义——Todos 依赖「Skills 已经改完 prompt」这个前提，若并发，顺序就乱了）。**顺序执行是「链式叠加」和「审批背压」两个特性的共同基石**：正因为串行，后面的中间件才能稳稳看到前面的成果，审批才能「卡住等人」而不需要复杂的挂起机制。想异步「观察」而不阻塞？中间件自己 `void someAsyncLog()`（不 await）即可——把「是否阻塞」的决定权交给中间件作者，框架只保证「按序、逐个、await」这个最可预测的语义。
 
-***
+---
 
 ## 5. 参考资料
 
@@ -422,15 +418,15 @@ afterToolUse  ── [Todos 重置计步器]
 - 三个真实中间件（本节仅举例，分别由后续章节精讲）：[skills-middleware.ts](../../src/agent/skills/skills-middleware.ts)（第 9 节）、[todos.ts](../../src/agent/todos/todos.ts)（第 10 节）、[coding-approval-middleware.ts](../../src/coding/permissions/coding-approval-middleware.ts)（第 15 节）
 - 中间件的装配现场（第 11 节）：[lead-agent.ts](../../src/coding/agents/lead-agent.ts#L62-L119)
 - 被钩子修改的两个上下文：[agent.ts `AgentContext`](../../src/agent/agent.ts#L20-L31)、[model-context.ts `ModelContext`](../../src/foundation/models/model-context.ts#L4-L9)
-- MDN · `Object.assign()`（增量合并语义）：<https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Object/assign>
-- MDN · `in` 运算符（`"__skip" in result` 的鸭子类型检测）：<https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/in>
-- Koa 中间件 / 洋葱模型（工业对比）：<https://github.com/koajs/koa/blob/master/docs/guide.md>
-- Express 中间件：<https://expressjs.com/en/guide/using-middleware.html>
-- LangChain Callbacks（观察型扩展点对比）：<https://python.langchain.com/docs/concepts/callbacks/>
-- OpenAI Agents SDK · Guardrails / Lifecycle（拦截型扩展点对比）：<https://openai.github.io/openai-agents-python/guardrails/>
+- MDN · `Object.assign()`（增量合并语义）：[https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Object/assign](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Object/assign)
+- MDN · `in` 运算符（`"__skip" in result` 的鸭子类型检测）：[https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/in](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/in)
+- Koa 中间件 / 洋葱模型（工业对比）：[https://github.com/koajs/koa/blob/master/docs/guide.md](https://github.com/koajs/koa/blob/master/docs/guide.md)
+- Express 中间件：[https://expressjs.com/en/guide/using-middleware.html](https://expressjs.com/en/guide/using-middleware.html)
+- LangChain Callbacks（观察型扩展点对比）：[https://python.langchain.com/docs/concepts/callbacks/](https://python.langchain.com/docs/concepts/callbacks/)
+- OpenAI Agents SDK · Guardrails / Lifecycle（拦截型扩展点对比）：[https://openai.github.io/openai-agents-python/guardrails/](https://openai.github.io/openai-agents-python/guardrails/)
 - 上游依赖：[第 5 节 · ReAct 主循环](./05-react-loop.md)、[第 6 节 · 并行工具调度](./06-parallel-tools.md)
 
-***
+---
 
 ## 6. 小结与下一节预告
 

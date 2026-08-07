@@ -19,6 +19,7 @@ export function registerAddCommand(parent: Command): void {
       ensureHelixentHomeEnv();
       ensureHelixentHomeDirectory();
 
+      
       const entry = await runModelWizard();
 
       let models: ModelEntry[];

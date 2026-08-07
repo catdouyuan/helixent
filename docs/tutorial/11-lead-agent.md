@@ -4,11 +4,12 @@
 >
 > 对应 roadmap 为本节设定的**核心问题**：
 >
-> > 一个「会写代码的 Agent」是如何被组装出来的？系统提示词里藏了哪些引导？
+>> 一个「会写代码的 Agent」是如何被组装出来的？系统提示词里藏了哪些引导？
+>>
 >
 > **一句边界声明**：本节精讲**一个文件**——[lead-agent.ts](../../src/coding/agents/lead-agent.ts)（120 行，绝对主角，也是整个 `coding` 层的入口），外加两个各只有一两行的**桶文件（barrel）** [coding/agents/index.ts](../../src/coding/agents/index.ts) 和 [coding/index.ts](../../src/coding/index.ts)。本节是一张**「装配总图」**：它会**引用**十几个尚未细看的工具（`read_file`、`bash`、`apply_patch`……）和已经看过的三个中间件，但**不拆开它们**——工具的内部实现是 [第 12～15 节](./00-roadmap.md) 的主题，本节只负责讲清「**这些零件按什么规则、什么顺序、被谁注入，最终拼成一个 `Agent` 实例**」。换句话说：前十节讲"零件怎么造"，本节讲"整机怎么装"；下四节再回头讲"每个被装进来的零件内部长啥样"。
 
-***
+---
 
 ## 0. 承上启下
 
@@ -38,17 +39,17 @@ new Agent({
 
 **`createCodingAgent` 就是那个"往五个槽位里填正确零件"的工厂。** 它做的全部事情，就是回答上面五个问号：
 
-| 槽位 | `createCodingAgent` 填了什么 | 本节小节 |
-| --- | --- | --- |
-| `model` | **调用方注入**（不硬编码，见 1.2） | 1.2 |
-| `prompt` | 一段 **XML 风格的系统提示词**（人设 + 工作目录 + 工具用法约束） | 1.4 |
-| `messages` | 若项目根有 `AGENTS.md`，**自动加载为一条 seed 消息**（长期记忆） | 1.3 |
-| `tools` | **12 个编程工具** + 1 个可选的提问工具 | 1.5 |
-| `middlewares` | **Skills + Todos + 可选的审批**三大中间件 | 1.6 |
+| 槽位            | `createCodingAgent` 填了什么                                          | 本节小节 |
+| --------------- | ----------------------------------------------------------------------- | -------- |
+| `model`       | **调用方注入**（不硬编码，见 1.2）                                | 1.2      |
+| `prompt`      | 一段**XML 风格的系统提示词**（人设 + 工作目录 + 工具用法约束）    | 1.4      |
+| `messages`    | 若项目根有`AGENTS.md`，**自动加载为一条 seed 消息**（长期记忆） | 1.3      |
+| `tools`       | **12 个编程工具** + 1 个可选的提问工具                            | 1.5      |
+| `middlewares` | **Skills + Todos + 可选的审批**三大中间件                         | 1.6      |
 
 打开 [lead-agent.ts](../../src/coding/agents/lead-agent.ts)，我们开始拆这张总装图。
 
-***
+---
 
 ## 1. 主题内容
 
@@ -178,16 +179,16 @@ Use the given tools and skills to perform parallel/sequential operations and sol
 
 **③ `<tool_usage>` —— 行为约束（本节重点）。** 这 8 条 bullet 是整段提示词的**灵魂**，它们不是泛泛的"好好干活"，而是**每一条都对应一个真实的工具或一个真实的坑**——本质上是一份"用工具的最佳实践清单"，而这些工具正是 [第 12～15 节](./00-roadmap.md) 要拆的。我们逐条对照：
 
-| `<tool_usage>` 约束 | 对应的工具 / 意图 | 将在哪节详解 |
-| --- | --- | --- |
-| Inspect directories before assuming file paths | 别瞎猜路径，先看目录 | §13 |
-| Prefer `list_files` or `glob_search` to discover files | 发现文件用这俩 | §13 |
-| Prefer `grep_search` to locate relevant content | 找内容用 grep | §13 |
-| **Read a file before editing it** | 改文件前先读——**防止盲改** | §12 |
-| Prefer `apply_patch` for targeted edits | 精确改动优先用补丁 | §14 |
-| If `apply_patch` fails, re-read and choose a safer strategy | 补丁失败后的**退路** | §14 |
-| **Do not repeat the same failing tool call** | 别拿同样的错误输入死磕——**防止死循环** | 呼应 §8 |
-| **Use tool result summaries and error codes** to decide next step | 用 [第 8 节](./08-tool-result-pipeline.md) 的 `summary`/`code` 做决策 | §8 |
+| `<tool_usage>` 约束                                                   | 对应的工具 / 意图                                                       | 将在哪节详解 |
+| ----------------------------------------------------------------------- | ----------------------------------------------------------------------- | ------------ |
+| Inspect directories before assuming file paths                          | 别瞎猜路径，先看目录                                                    | §13         |
+| Prefer`list_files` or `glob_search` to discover files               | 发现文件用这俩                                                          | §13         |
+| Prefer`grep_search` to locate relevant content                        | 找内容用 grep                                                           | §13         |
+| **Read a file before editing it**                                 | 改文件前先读——**防止盲改**                                      | §12         |
+| Prefer`apply_patch` for targeted edits                                | 精确改动优先用补丁                                                      | §14         |
+| If`apply_patch` fails, re-read and choose a safer strategy            | 补丁失败后的**退路**                                              | §14         |
+| **Do not repeat the same failing tool call**                      | 别拿同样的错误输入死磕——**防止死循环**                          | 呼应 §8     |
+| **Use tool result summaries and error codes** to decide next step | 用[第 8 节](./08-tool-result-pipeline.md) 的 `summary`/`code` 做决策 | §8          |
 
 看清楚了吗？**这张表就是本节作为"总装图"的最好证明**——系统提示词里的每一条引导，都在为后面几节要装进来的工具"打预防针"。尤其最后两条，直接呼应了 [第 8 节](./08-tool-result-pipeline.md) 那套 `{ ok, summary, code }` 结构化结果契约：**提示词明确教模型"看 summary 和 error code 来决定下一步、别拿同样的烂输入死磕"**——第 8 节我们造好了这套结构化错误，这里就在提示词里"激活"了它的用途。
 
@@ -219,13 +220,13 @@ tools: [
 
 **按 roadmap 后续章节的划分，这 12+1 个工具正好分成五组**（本节只报"装了什么、归哪节"，实现留给对应章节）：
 
-| 组 | 工具 | 干什么 | 详解章节 |
-| --- | --- | --- | --- |
-| **文件读写** | `read_file`、`write_file`、`str_replace` | 读、整体写、唯一匹配替换 | [§12](./00-roadmap.md) |
-| **探索/系统** | `bash`、`glob_search`、`grep_search`、`list_files`、`file_info`、`mkdir`、`move_path` | 跑命令、找文件、搜内容、列目录、看元信息、建目录、移动 | [§13](./00-roadmap.md) |
-| **精确编辑** | `apply_patch` | 手写 unified diff 打补丁 | [§14](./00-roadmap.md) |
-| **计划** | `todo_write`（= `todoTool`） | 维护待办清单 | [§10](./10-todos.md)（已讲） |
-| **人机提问** | `ask_user_question`（可选） | Agent 主动问用户 | [§15](./00-roadmap.md) |
+| 组                  | 工具                                                                                                | 干什么                                                 | 详解章节                     |
+| ------------------- | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------ | ---------------------------- |
+| **文件读写**  | `read_file`、`write_file`、`str_replace`                                                      | 读、整体写、唯一匹配替换                               | [§12](./00-roadmap.md)       |
+| **探索/系统** | `bash`、`glob_search`、`grep_search`、`list_files`、`file_info`、`mkdir`、`move_path` | 跑命令、找文件、搜内容、列目录、看元信息、建目录、移动 | [§13](./00-roadmap.md)       |
+| **精确编辑**  | `apply_patch`                                                                                     | 手写 unified diff 打补丁                               | [§14](./00-roadmap.md)       |
+| **计划**      | `todo_write`（= `todoTool`）                                                                    | 维护待办清单                                           | [§10](./10-todos.md)（已讲） |
+| **人机提问**  | `ask_user_question`（可选）                                                                       | Agent 主动问用户                                       | [§15](./00-roadmap.md)       |
 
 这里有两个装配细节值得说：
 
@@ -307,12 +308,12 @@ const agent = await createCodingAgent({
 
 对照 1.2 讲的"库默认值"，你会看到一个清晰的**分层扩充**模式：
 
-| 参数 | 库默认（lead-agent.ts） | CLI 注入的实参（cli/index.tsx） |
-| --- | --- | --- |
-| `skillsDirs` | 只有 `.agents/skills` 一个 | **5 个**：项目 `skills`、项目 `.agents/skills`、安装目录、`~/.agents/skills`、`~/.helixent/skills`（[cli L64-70](../../src/cli/index.tsx#L64-L70)） |
-| `askUser` | 无（不装审批） | `globalApprovalManager.askUser`（接 TUI 弹窗） |
-| `askUserQuestion` | 无（不装提问工具） | `globalAskUserQuestionManager.askUserQuestion`（接 TUI 弹窗） |
-| `approvalPersistence` | 无（白名单为空） | 接 `SettingsLoader/Writer`（读写 `~/.helixent/...`） |
+| 参数                    | 库默认（lead-agent.ts）     | CLI 注入的实参（cli/index.tsx）                                                                                                                                  |
+| ----------------------- | --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `skillsDirs`          | 只有`.agents/skills` 一个 | **5 个**：项目 `skills`、项目 `.agents/skills`、安装目录、`~/.agents/skills`、`~/.helixent/skills`（[cli L64-70](../../src/cli/index.tsx#L64-L70)） |
+| `askUser`             | 无（不装审批）              | `globalApprovalManager.askUser`（接 TUI 弹窗）                                                                                                                 |
+| `askUserQuestion`     | 无（不装提问工具）          | `globalAskUserQuestionManager.askUserQuestion`（接 TUI 弹窗）                                                                                                  |
+| `approvalPersistence` | 无（白名单为空）            | 接`SettingsLoader/Writer`（读写 `~/.helixent/...`）                                                                                                          |
 
 **这张表就是"分层"最生动的体现**，呼应 [第 1 节](./01-overview.md) 的核心思想：**`coding` 层给一个"能独立跑、但功能最小"的默认 Agent（库）；`cli` 层负责"注入真实环境"，把它扩充成一个完整的产品。** `createCodingAgent` 本身不知道有 TUI、不知道有 settings 文件、不知道技能还能从 home 目录来——它只暴露一组"插孔"，让 CLI 去插。**同一个工厂，CLI 用它做出交互式产品，测试可以用它做出 headless 实例（全不传可选参数）**——这就是依赖注入换来的复用性。
 
@@ -352,31 +353,23 @@ const agent = await createCodingAgent({
 
 **一句话总括**：**`createCodingAgent` 是一条"总装线"——它把"环境相关的零件"（模型、技能目录、问人回调、白名单）作为参数注入，把"编程本质的零件"（XML 人设、12 个工具、三大中间件顺序）写死在函数体里，再自动挂上项目的 `AGENTS.md` 长期记忆，最终合成一个第 5 节那副空骨架的"填满版"。前十节造零件，这一节装整机。**
 
-***
+---
 
 ## 2. 亮点与关键设计
 
 明确标注哪些是「妙笔」、哪些是「关键决策」：
 
 1. **【核心决策】"本质写死、环境注入"的分界线。** 系统提示词、12 个工具、三大中间件顺序——这些是"Coding Agent 之所以是 Coding Agent"的本质，写死在工厂里；模型、技能目录、问人回调、白名单落盘——这些是环境相关的，通过参数注入。这条分界线让**同一个工厂既能被 CLI 装成交互产品、又能被测试装成 headless 实例**（1.1、1.2、1.7）。
-
 2. **【核心妙笔】`AGENTS.md` 作为 `role:"user"` seed 消息注入，而非拼进 system prompt。** 用一句 `>` 引用块旁白告诉模型"这是自动加载的项目文件"，让项目记忆成为**对话的一部分**（可回看、可引用），同时**保持系统提示词是"纯人设"**（换项目 system prompt 不变）。类型约束为 `NonSystemMessage[]` 还从编译期杜绝了"混入 system 消息"（1.3、Q1）。
-
 3. **【关键决策】XML 风格的系统提示词。** 用 `<agent>`/`<working_directory>`/`<tool_usage>`/`<notes>` 把"身份/空间/行为约束/边界"结构化，比一段散文更利于模型解析与遵守，也利于人类维护（1.4、Q2）。
-
 4. **【妙笔】`<tool_usage>` 的每一条都"预激活"后面章节的工具。** 8 条约束逐一对应真实工具/真实坑，尤其"用 summary 和 error code 决策、别拿烂输入死磕"直接激活了[第 8 节](./08-tool-result-pipeline.md)的结构化错误契约——本节作为"总装图"的最佳注脚（1.4 那张对照表）。
-
 5. **【关键决策】依赖注入解耦模型厂商。** 工厂只收一个 `Model`、绝不 `new` 任何 Provider，让第 16/17 节的 OpenAI/Anthropic 都能无缝接入（1.2）。
-
 6. **【关键决策】能力与前提绑定的"条件装配"。** `ask_user_question` 工具、审批中间件都**只在传了对应"问人"回调时才装**——没有回答者就不给提问/审批能力，避免"问了没人答"的陷阱。用 `...(cond ? [x] : [])` 干净实现（1.5、1.6）。
-
 7. **【关键决策】中间件顺序 `[Skills, Todos, Approval]` 是精心排布的。** `beforeModel` 阶段 Skills 先注入、Todos 后接力（呼应第 9/10 节的"链式叠加"）；`beforeToolUse` 阶段审批作为"动手前最后一道闸"排在最后（1.6、Q4）。
-
 8. **【关键决策】库给最小默认、CLI 分层扩充。** `skillsDirs` 库默认只 1 个、CLI 扩成 5 个；问人/白名单库默认无、CLI 接到全局管理器和 settings——教科书级的"库 vs 产品"分层（1.7，呼应第 1 节）。
-
 9. **【妙笔】`async` 工厂 + `Bun.file().exists()` 的宽容加载。** 读 `AGENTS.md` 需要异步，故工厂是 `async`；文件不存在则 `messages` 保持空、Agent 照常启动——延续第 8/9 节"缺失绝不拖垮主流程"的容错基调（1.3）。
 
-***
+---
 
 ## 3. 工业对比
 
@@ -406,15 +399,15 @@ Aider 这类较早的编程 CLI，提示词和工具选择往往**硬编码在�
 
 ### 3.5 一览表
 
-| 方案 | 项目记忆机制 | 系统提示词风格 | 模型/工具装配方式 | 分层清晰度 |
-| --- | --- | --- | --- | --- |
-| **Helixent `createCodingAgent`** | 自动加载根 `AGENTS.md` 为 user 消息 | XML 结构化 + 行为约束 | 工厂 + 依赖注入 | 高（库/CLI 分层） |
-| Claude Code | 多层 `CLAUDE.md`/`AGENTS.md` 合并 | 重度结构化 + 超长规范 | 内置 | 高 |
-| Cursor | `.cursorrules`/`.cursor/rules`（规则） | 规则注入 + glob 条件 | 内置 | 中 |
-| OpenAI Assistants | 无（需自己实现） | `instructions` 自由文本 | API 参数 | 由使用者决定 |
-| Aider 等早期 CLI | 有的支持 read 文件 | 多为散文 | 常硬编码在主流程 | 低 |
+| 方案                                     | 项目记忆机制                               | 系统提示词风格            | 模型/工具装配方式 | 分层清晰度        |
+| ---------------------------------------- | ------------------------------------------ | ------------------------- | ----------------- | ----------------- |
+| **Helixent `createCodingAgent`** | 自动加载根`AGENTS.md` 为 user 消息       | XML 结构化 + 行为约束     | 工厂 + 依赖注入   | 高（库/CLI 分层） |
+| Claude Code                              | 多层`CLAUDE.md`/`AGENTS.md` 合并       | 重度结构化 + 超长规范     | 内置              | 高                |
+| Cursor                                   | `.cursorrules`/`.cursor/rules`（规则） | 规则注入 + glob 条件      | 内置              | 中                |
+| OpenAI Assistants                        | 无（需自己实现）                           | `instructions` 自由文本 | API 参数          | 由使用者决定      |
+| Aider 等早期 CLI                         | 有的支持 read 文件                         | 多为散文                  | 常硬编码在主流程  | 低                |
 
-***
+---
 
 ## 4. 深度解释：为什么这样设计？不这样会怎样？
 
@@ -489,16 +482,18 @@ Aider 这类较早的编程 CLI，提示词和工具选择往往**硬编码在�
 
 **更稳妥的做法（当前代码没做，可作改进）**：要么把 `AGENTS.md` 内容改为拼进 system prompt（但那会引入 Q1 说的耦合代价）；要么给 `clearMessages` 一个"保留 seed 消息"的选项，`/clear` 时只清用户对话、保留开头的 `AGENTS.md`；要么 `/clear` 后重新注入一次 `AGENTS.md`。**这属于"把项目记忆存成一条普通消息"这个设计（Q1 的取舍）带来的副作用**——Q1 的好处（职责分离）是实打实的，但代价就是它和普通消息一样会被 `clearMessages` 波及。**识别出这种"设计取舍的连带影响"，比简单判'好/坏'更重要**——它提醒我们：任何"把 X 建模成 Y"的决定，都会让 X 继承 Y 的所有行为（包括不想要的那些）。
 
-***
+---
 
 ## 5. 参考资料
 
 **本节精讲的源码（一个主角 + 两个桶文件）**：
+
 - 装配总图（绝对主角）：[lead-agent.ts](../../src/coding/agents/lead-agent.ts)（工厂签名 [L31-L47](../../src/coding/agents/lead-agent.ts#L31-L47)、`AGENTS.md` 加载 [L48-L61](../../src/coding/agents/lead-agent.ts#L48-L61)、系统提示词 [L80-L101](../../src/coding/agents/lead-agent.ts#L80-L101)、工具数组 [L103-L117](../../src/coding/agents/lead-agent.ts#L103-L117)、中间件装配 [L62-L76](../../src/coding/agents/lead-agent.ts#L62-L76)、`new Agent` [L78-L119](../../src/coding/agents/lead-agent.ts#L78-L119)）
 - 桶文件：[coding/agents/index.ts](../../src/coding/agents/index.ts)、[coding/index.ts](../../src/coding/index.ts)
 - 项目记忆样例：[AGENTS.md](../../AGENTS.md)（本仓库自己的项目约定文件）
 
 **装配所依赖的零件（各章精讲）**：
+
 - 空骨架 `Agent` 与构造函数：[agent.ts](../../src/agent/agent.ts#L65-L91)（[第 5 节](./05-react-loop.md)）、`clearMessages` [L131-L133](../../src/agent/agent.ts#L131-L133)
 - `prompt` → system 消息封装：[model.ts `_buildModelProviderParams`](../../src/foundation/models/model.ts#L50-L63)（[第 3 节](./03-model.md)）
 - `NonSystemMessage` 类型：[message.ts](../../src/foundation/messages/types/message.ts#L54)（[第 2 节](./02-message.md)）
@@ -506,9 +501,11 @@ Aider 这类较早的编程 CLI，提示词和工具选择往往**硬编码在�
 - 需审批的工具清单：[requires-approval.ts](../../src/coding/permissions/requires-approval.ts#L2-L9)
 
 **调用方（CLI 如何注入环境）**：
+
 - [cli/index.tsx](../../src/cli/index.tsx#L44-L83)：`new Model`（[L57-62](../../src/cli/index.tsx#L57-L62)）、5 个技能目录（[L64-70](../../src/cli/index.tsx#L64-L70)）、`createCodingAgent` 调用与回调注入（[L74-83](../../src/cli/index.tsx#L74-L83)）——具体机制留给 [第 18 节](./00-roadmap.md)
 
 **上游依赖章节**：
+
 - [第 1 节 · 项目全景与四层架构](./01-overview.md)（"库给最小默认、CLI 组装成产品"的分层思想）
 - [第 3 节 · Model 与 ModelProvider](./03-model.md)（依赖注入模型、`prompt` 如何变 system 消息）
 - [第 5 节 · ReAct 主循环](./05-react-loop.md)（`Agent` 空骨架的五个槽位）
@@ -517,12 +514,13 @@ Aider 这类较早的编程 CLI，提示词和工具选择往往**硬编码在�
 - [第 9 节 · Skills](./09-skills.md)、[第 10 节 · Todos](./10-todos.md)（被装配进来的两个中间件）
 
 **外部资料**：
-- Anthropic · Claude Code 与 `CLAUDE.md`/项目记忆（本节 `AGENTS.md` 的直接对标）：<https://docs.anthropic.com/en/docs/claude-code>
-- `AGENTS.md` 通用约定（跨工具的项目说明文件命名）：<https://agents.md/>
-- Anthropic · Prompt engineering 中的 XML 标签实践（本节提示词风格的来源）：<https://docs.anthropic.com/en/docs/build-with-claude/prompt-engineering/use-xml-tags>
-- 依赖注入（Dependency Injection）概念：<https://en.wikipedia.org/wiki/Dependency_injection>
 
-***
+- Anthropic · Claude Code 与 `CLAUDE.md`/项目记忆（本节 `AGENTS.md` 的直接对标）：[https://docs.anthropic.com/en/docs/claude-code](https://docs.anthropic.com/en/docs/claude-code)
+- `AGENTS.md` 通用约定（跨工具的项目说明文件命名）：[https://agents.md/](https://agents.md/)
+- Anthropic · Prompt engineering 中的 XML 标签实践（本节提示词风格的来源）：[https://docs.anthropic.com/en/docs/build-with-claude/prompt-engineering/use-xml-tags](https://docs.anthropic.com/en/docs/build-with-claude/prompt-engineering/use-xml-tags)
+- 依赖注入（Dependency Injection）概念：[https://en.wikipedia.org/wiki/Dependency_injection](https://en.wikipedia.org/wiki/Dependency_injection)
+
+---
 
 ## 6. 小结与下一节预告
 

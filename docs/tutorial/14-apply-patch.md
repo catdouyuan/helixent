@@ -4,11 +4,12 @@
 >
 > 对应 roadmap 为本节设定的**核心问题**：
 >
-> > 为什么要自己实现一个 diff 解析器？它如何保证「打补丁不打错地方」？
+>> 为什么要自己实现一个 diff 解析器？它如何保证「打补丁不打错地方」？
+>>
 >
 > **一句边界声明**：本节只精讲**一个文件**——[apply-patch.ts](../../src/coding/tools/apply-patch.ts)（232 行）。它是全项目**最「算法密集」**的工具：没有 spawn 子进程、没有花哨的 API，只有一个**从零手写的 unified diff 解析器 + 应用器**。我们会把它拆成三个纯函数（`parsePatch` 解析 / `validateHunkCounts` 校验 / `applyHunks` 应用）逐行讲透，然后看外层 `invoke` 如何把它们编排成一个「解析 → 逐文件校验路径 → 逐 hunk 逐行比对 → 写盘」的安全管线。它**站在 [第 12 节](./12-tool-foundation-file-io.md) 的 `okToolResult`/`errorToolResult` 地基上**（所以本节必须在第 12 节之后读），错误码 `INVALID_PATCH_PATH`/`DELETE_NOT_SUPPORTED`/`PATCH_APPLY_FAILED` 又精确对齐 [第 8 节](./08-tool-result-pipeline.md) 的分类器——尤其 `DELETE_NOT_SUPPORTED` 是全项目**唯一**触发 `unsupported` 错误类别的码，和 [第 13 节](./13-search-system-tools.md) 的 `RG_NOT_FOUND`（唯一的 `environment_missing`）恰成一对镜像。
 
-***
+---
 
 ## 0. 承上启下
 
@@ -34,7 +35,7 @@
 
 准备好了。`apply_patch` 的核心是「**看懂一段 diff 文本，再把它安全地贴回文件**」——我们先从「为什么要自己手写这个解析器、而不用现成的库」这个最根本的问题开始。
 
-***
+---
 
 ## 1. 主题内容
 
@@ -53,10 +54,10 @@
 
 拆开看，它由**两种结构**组成：
 
-| 结构 | 样子 | 含义 |
-| --- | --- | --- |
-| **文件头（file header）** | `--- 旧路径` + `+++ 新路径` | 「接下来的改动作用在哪个文件上」 |
-| **hunk（变更块）** | `@@ -oldStart,oldCount +newStart,newCount @@` + 若干行 | 「在旧文件第 `oldStart` 行起、涉及 `oldCount` 行，对应新文件第 `newStart` 行起、`newCount` 行」 |
+| 结构                            | 样子                                                     | 含义                                                                                                   |
+| ------------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| **文件头（file header）** | `--- 旧路径` + `+++ 新路径`                          | 「接下来的改动作用在哪个文件上」                                                                       |
+| **hunk（变更块）**        | `@@ -oldStart,oldCount +newStart,newCount @@` + 若干行 | 「在旧文件第`oldStart` 行起、涉及 `oldCount` 行，对应新文件第 `newStart` 行起、`newCount` 行」 |
 
 hunk 里的每一行都带一个**前缀字符**，这是 unified diff 的灵魂：
 
@@ -224,7 +225,7 @@ if (header) {
 2. **`Number(header[2] ?? 1)` 的默认值**：正则里 `oldCount`/`newCount` 是可选组，没捕获到时是 `undefined`，`?? 1` 兜底成 1——**精确对应 unified diff「count 省略即为 1」的约定**。正则的「可选」和这里的「默认 1」是一套配合。
 3. **贪婪吃行 + 双边界**：内层循环一直吃，直到遇到 `@@ `（下一个 hunk）或 `--- `（下一个文件）才 `break`。**注意 `break` 时不动 `index`**——把这一行「退还」给主循环去重新判断（主循环的 `continue` 会重新走一遍分支）。这是状态机「交接」的关键手法。
 4. **忽略两种噪声行**：`\ No newline at end of file`（这是 diff 工具标记「文件末尾无换行」的元信息行）和**空行**都被 `continue` 跳过。**为什么忽略空行？** 因为真正的「空的上下文行」在 unified diff 里应该是**一个空格 + 空内容**（即 `" "`），而**完全空的行**（`""`）通常是补丁文本里无意义的分隔。跳过它们让解析更鲁棒。（这个宽容点值得记住——1.5 会讲它和「严格比对」如何并存。）
-5. **未知前缀直接 throw**：如果某行既不是 ` `/`-`/`+` 开头，也不是上面两种噪声，就抛 `Unsupported hunk line`。**这又是「从严」**——不认识的东西绝不「猜」，直接失败。
+5. **未知前缀直接 throw**：如果某行既不是 /`-`/`+` 开头，也不是上面两种噪声，就抛 `Unsupported hunk line`。**这又是「从严」**——不认识的东西绝不「猜」，直接失败。
 
 **状态 C · 其它行**：主循环末尾 `index += 1`（[L98](../../src/coding/tools/apply-patch.ts#L98)）——不匹配文件头也不匹配 hunk 头的行（比如 `diff --git ...`、`index abc..def` 这类 git 补丁的元信息），**直接跳过**。这让解析器能吞下完整的 `git diff` 输出而不被那些「花边」噪声干扰。
 
@@ -363,11 +364,11 @@ for (const line of hunk.lines) {
 
 **这 20 行是整个工具的心脏，是「打补丁不打错地方」的保证所在。逐行看三种行的命运：**
 
-| 行类型 | 是否比对源文件 | 是否推进 `output` | 是否推进 `sourceIndex` | 直觉 |
-| --- | --- | --- | --- | --- |
-| **context** | ✅ **硬比对** | ✅ 推 `actual` | ✅ +1 | 「这行该没变，我核对一下确实没变，原样保留」 |
-| **delete** | ✅ **硬比对** | ❌ 不推（=删掉） | ✅ +1 | 「这行该被删，我核对一下确实是它，然后跳过它」 |
-| **add** | ❌ 不比对 | ✅ 推 `line.text` | ❌ 不动 | 「这是新行，源文件里没有，直接加进去」 |
+| 行类型            | 是否比对源文件     | 是否推进`output` | 是否推进`sourceIndex` | 直觉                                           |
+| ----------------- | ------------------ | ------------------ | ----------------------- | ---------------------------------------------- |
+| **context** | ✅**硬比对** | ✅ 推`actual`    | ✅ +1                   | 「这行该没变，我核对一下确实没变，原样保留」   |
+| **delete**  | ✅**硬比对** | ❌ 不推（=删掉）   | ✅ +1                   | 「这行该被删，我核对一下确实是它，然后跳过它」 |
+| **add**     | ❌ 不比对          | ✅ 推`line.text` | ❌ 不动                 | 「这是新行，源文件里没有，直接加进去」         |
 
 **关键中的关键，是 context 和 delete 那两个 `if (actual !== line.text) throw`：**
 
@@ -502,11 +503,11 @@ export function inferToolErrorKind(code?: string): ToolErrorKind {
 }
 ```
 
-| `apply_patch` 错误码 | 触发场景 | 第 8 节归类 | 对模型的语义 |
-| --- | --- | --- | --- |
-| `INVALID_PATCH_PATH` | 路径非绝对 | `invalid_input` | 「输入错了，把路径改成绝对路径再来」 |
-| `DELETE_NOT_SUPPORTED` | `+++ /dev/null` | **`unsupported`**（全项目唯一） | 「这个操作我不支持，换个工具（如 `bash rm`）」 |
-| `PATCH_APPLY_FAILED` | 解析/校验/比对的一切 throw | `execution_failed` | 「执行失败了，看 error 详情决定怎么改」 |
+| `apply_patch` 错误码   | 触发场景                   | 第 8 节归类                             | 对模型的语义                                    |
+| ------------------------ | -------------------------- | --------------------------------------- | ----------------------------------------------- |
+| `INVALID_PATCH_PATH`   | 路径非绝对                 | `invalid_input`                       | 「输入错了，把路径改成绝对路径再来」            |
+| `DELETE_NOT_SUPPORTED` | `+++ /dev/null`          | **`unsupported`**（全项目唯一） | 「这个操作我不支持，换个工具（如`bash rm`）」 |
+| `PATCH_APPLY_FAILED`   | 解析/校验/比对的一切 throw | `execution_failed`                    | 「执行失败了，看 error 详情决定怎么改」         |
 
 **三个码精确命中三条不同的分支——这不是巧合，是命名约定的产物**：`INVALID_` 前缀、`_NOT_SUPPORTED`/`_FAILED` 后缀都是 [code-convention.md](../code-convention.md) 规定的 SCREAMING_SNAKE 错误码风格，`inferToolErrorKind` 就靠这些前后缀「望文生义」地分类。**尤其值得玩味的是 `DELETE_NOT_SUPPORTED` 和第 13 节 `RG_NOT_FOUND` 的镜像关系**：
 
@@ -558,31 +559,23 @@ export function inferToolErrorKind(code?: string): ToolErrorKind {
 
 **一句话总括**：**`apply_patch` 是全项目最「算法密集」的工具——它手写一台状态机把 diff 文本解析成结构（`parsePatch`），用一道算术校验挡住内部矛盾的补丁（`validateHunkCounts`），再用「按游标走、逐行硬比对 context/delete、对不上就 throw」的应用器保证「打补丁不打错地方」（`applyHunks`）。外层 `invoke` 给它加上「绝对路径、禁删 /dev/null、自动建父目录、统一兜底成 PATCH_APPLY_FAILED」的编排，产出的三个错误码精确命中第 8 节分类器的三条分支。它把第 12 节 `str_replace` 那条『唯一匹配』软约束，硬化成了『逐行核对上下文』的强约束——这就是「用严格换安全」的极致。**
 
-***
+---
 
 ## 2. 亮点与关键设计
 
 明确标注哪些是「妙笔」、哪些是「关键决策」：
 
 1. **【核心妙笔】`applyHunks` 用「逐行硬比对 context/delete，对不上就 throw」实现『不打错地方』。** 它**不相信行号、只核对内容**——context 行核对「这行确实没变」、delete 行核对「删的确实是它」，任一对不上就抛 `Context mismatch`/`Delete mismatch`，整个补丁作废、一字不写。这是 roadmap 核心问题「如何保证打补丁不打错地方」的直接答案，也是「宁可不改、绝不改错」哲学的落地（1.5）。
-
 2. **【关键决策】从零手写而非引 diff 库——因为需求「窄」、要求「严」、要内联「安全策略」。** 只需 apply 不需 diff（需求窄）、要零模糊逐行硬比对（要求严，与 GNU patch 的「模糊匹配」目标相反）、要内联「绝对路径 + 禁删」（项目安全策略）。三点合起来，引库的收益远小于手写 232 行的可控性（1.2）。
-
 3. **【核心妙笔】`validateHunkCounts` 用一道纯算术校验，在「碰文件之前」挡住内部矛盾的补丁。** 靠「context 行 old/new 都 +1、delete 只 +old、add 只 +new」的三分类计数，对账 hunk 头声称的 `oldCount`/`newCount`。这让「模型自己算错行数」这类错误在最早期、最廉价的阶段就被拦下，是补丁的「自校验」（1.4）。
-
 4. **【妙笔】`DELETE_NOT_SUPPORTED` 是全项目唯一的 `unsupported` 错误码，与第 13 节 `RG_NOT_FOUND` 构成镜像。** 刻意拒绝 `+++ /dev/null` 删除，返回一个 `_NOT_SUPPORTED` 后缀的码——它是 `inferToolErrorKind` 里 `unsupported` 分支的唯一触发者，语义「这能力我故意不给，别硬试」。和 `RG_NOT_FOUND`（唯一的 `environment_missing`）分别标记出错误分类体系里「能力被阉割」与「环境不满足」两个最特殊的角落（1.6②b、1.7）。
-
 5. **【关键决策】统一 try/catch 把「解析 + 校验 + 应用」的一切 throw 收敛成 `PATCH_APPLY_FAILED`。** 三个纯函数内部大胆用 `throw` 表达各种「结构/内容不对」（缺 `+++`、hunk 在文件头前、未知前缀、空补丁、三种 mismatch……），最外层一个 catch 统一兜底成结构化错误码——**「内部用异常、边界转结构化」的清晰分层**，让纯函数保持简洁、边界保持契约（1.6④）。
-
 6. **【妙笔】`normalizePatchPath` 剥 `a/`/`b/` 前缀 + 状态 C 跳过 git 元信息行 = 直接吞下 `git diff` 输出。** 模型可以把 `git diff` 的原始输出（带 `diff --git`、`index abc..def`、`a/`/`b/` 前缀）几乎原样丢进来，解析器自动消化这些「花边」。「结构从严、噪声从宽」的分寸感（1.3）。
-
 7. **【关键决策】`includeData: true`——`apply_patch` 的结果 data 回喂模型，不同于第 13 节搜索工具的 summary-only。** 因为 `changedFiles`（改了哪些文件）是模型下一步推理的**刚需信息**（对比搜索工具那种「太大或太废话」的 data）。这印证第 13 节 1.7 的判据：「回不回 data，看 data 里有没有模型下一步真正需要的新信息」（1.6）。
-
 8. **【妙笔】读空串支持「新建文件」——一个工具覆盖「改」与「建」。** 文件不存在时 `original = ""`，`applyHunks` 把空串切成空数组 `[]`，于是一个「全 add 行、从第 0 行起」的补丁就能建出新文件。配合「自动建父目录」，`apply_patch` 既能外科手术式改文件，也能整建新文件（1.5、1.6②c/②e）。
-
 9. **【一致性红利】三个错误码靠 SCREAMING_SNAKE 前后缀「望文生义」地命中第 8 节分类器。** `INVALID_` → `invalid_input`、`_NOT_SUPPORTED` → `unsupported`、`_FAILED` → `execution_failed`。工具只管按 [code-convention](../code-convention.md) 起对名字，分类器就自动归好类——这是「命名即契约」的一致性红利（1.7）。
 
-***
+---
 
 ## 3. 工业对比
 
@@ -626,17 +619,17 @@ Aider（一个流行的开源 AI 结对编程工具）在这个问题上做了�
 
 ### 3.5 一览表
 
-| 维度 | Helixent `apply_patch` | GNU patch / git apply | OpenAI Codex | Aider | npm diff 库 |
-| --- | --- | --- | --- | --- | --- |
-| 补丁格式 | 标准 unified diff | 标准 unified diff | 自定义格式 | 多档（whole/diff/udiff） | unified diff |
-| 匹配策略 | **零模糊·逐行硬比对** | 模糊匹配（fuzz） | 上下文块定位 | 视格式 | 多带 fuzz |
-| 对不上时 | **立刻失败** | 尽量猜着打上 | 视实现 | 失败/重试 | 默认宽容 |
-| 服务对象 | LLM（要能纠错） | 人类（会检查） | LLM | LLM | 通用 |
-| 删文件 | **刻意禁止** | 支持 | 支持 | 支持 | 支持 |
-| 依赖 | **零**（手写 232 行） | 系统命令 | 内置 | 内置 | 第三方库 |
-| 错误可读性 | 结构化码 + 精确行号 | 文本 reject 文件 | 视实现 | 视实现 | 异常/布尔 |
+| 维度       | Helixent`apply_patch`      | GNU patch / git apply | OpenAI Codex | Aider                    | npm diff 库  |
+| ---------- | ---------------------------- | --------------------- | ------------ | ------------------------ | ------------ |
+| 补丁格式   | 标准 unified diff            | 标准 unified diff     | 自定义格式   | 多档（whole/diff/udiff） | unified diff |
+| 匹配策略   | **零模糊·逐行硬比对** | 模糊匹配（fuzz）      | 上下文块定位 | 视格式                   | 多带 fuzz    |
+| 对不上时   | **立刻失败**           | 尽量猜着打上          | 视实现       | 失败/重试                | 默认宽容     |
+| 服务对象   | LLM（要能纠错）              | 人类（会检查）        | LLM          | LLM                      | 通用         |
+| 删文件     | **刻意禁止**           | 支持                  | 支持         | 支持                     | 支持         |
+| 依赖       | **零**（手写 232 行）  | 系统命令              | 内置         | 内置                     | 第三方库     |
+| 错误可读性 | 结构化码 + 精确行号          | 文本 reject 文件      | 视实现       | 视实现                   | 异常/布尔    |
 
-***
+---
 
 ## 4. 深度解释：为什么这样设计？不这样会怎样？
 
@@ -667,9 +660,7 @@ Aider（一个流行的开源 AI 结对编程工具）在这个问题上做了�
 先明确 unified diff 里删文件的表示：`+++ /dev/null` 意味着「新文件是空/不存在」，即**整个文件被删掉**。`apply_patch` 看到它直接返 `DELETE_NOT_SUPPORTED`。**三个理由支撑这个决策：**
 
 1. **删文件是「不可逆的高危操作」，且危害面大。** 改文件错了还能改回来（内容还在版本控制里、或能重新生成），但「删文件」如果删错了、或删了不该删的，恢复成本高得多（尤其没提交 git 时）。让一个「打补丁」的工具**顺带**具备「删文件」能力，是在扩大它的「爆炸半径」。
-
 2. **删除有更受控的替代路径。** 模型真要删文件，可以用 `bash("rm /path/to/file")`——而 `bash` 在 [第 11 节](./11-lead-agent.md) 的 `CODING_TOOLS_REQUIRING_APPROVAL` 名单里，**每次执行都会弹 [第 15 节](./00-roadmap.md) 的审批框让人类确认**。**这就把「删文件」这个高危操作，从 `apply_patch` 的「一声不响执行」，挪到了 `bash` 的「必经人类审批」。** 换句话说，禁删不是「不能删」，而是「删的时候必须走审批那条更醒目的路」。
-
 3. **保持工具语义单一。** `apply_patch` 的名字和心智模型是「**修改**文件内容」。让它能删文件会**模糊这个语义**——一个「改内容」的工具突然能让整个文件消失，是违反直觉的。**「一个工具只干一件在名字里说清楚的事」** 是好的接口设计。
 
 **「不这样会怎样」**：如果支持删除，模型可能因为一个措辞含糊的任务（「清理一下这个模块」）就生成一个删文件的补丁，`apply_patch` 静默执行、文件没了——而它**不在**「必审批」逻辑的重点保护范围（虽然 `apply_patch` 本身也在审批名单，但审批框展示「一个补丁」时，人类未必注意到里头藏着 `/dev/null` 删除）。**明确拒绝 `/dev/null`、逼模型改用会醒目弹窗的 `bash rm`，是一道额外的安全护栏。** 这与本节通篇「用严格换安全」的哲学一脉相承。
@@ -728,9 +719,7 @@ index 3a2f1b..8c4d2e 100644
 **为什么这可以接受？三层考量：**
 
 1. **常见场景是「单文件补丁」，根本不触发。** Agent 做「精确编辑」时，绝大多数补丁只改**一个**文件（改一个函数、修一个 bug）。单文件补丁要么整体成功、要么整体失败（在写盘前就抛错），**天然是原子的**。多文件补丁 + 中途失败是个**边缘场景**。
-
 2. **真做到事务性，成本高、复杂度大。** 要保证多文件原子性，得先「全部应用到内存、全部校验通过、再一次性全部写盘」（两阶段提交），或者「记录已写文件、失败时逐个回滚」。这两种都要引入额外的状态管理和错误处理逻辑，**与本工具「小而清晰」的气质相悖**。对一个边缘场景付出这么大的复杂度，性价比低。
-
 3. **有外部安全网兜底。** 即使真的留下了部分改动，Agent 通常在 **git 仓库**里工作——用户能 `git diff` 看到所有改动、`git checkout` 回滚任何一个文件。而且模型收到 `PATCH_APPLY_FAILED` 后会重读文件、发现 fileA 已改 fileB 没改，从而修正。**「部分应用」是可观测、可恢复的，不是不可挽回的数据损坏。**
 
 **所以这是一个典型的「工程权衡」**：在「常见场景无害 + 完整事务性成本高 + 有外部安全网」的综合判断下，作者选择了**不实现事务性**，换取代码的简洁。**读源码时能识别出这类「经过权衡的局限」（而非把它误判成 bug），是理解设计意图的关键。** 当然，如果未来「多文件补丁」变成高频场景，这里就值得升级成两阶段提交了——**这也是 1.6 那个 ⚠️ 标注存在的意义：把局限诚实地写出来，而不是假装它不存在。**
@@ -755,11 +744,12 @@ index 3a2f1b..8c4d2e 100644
 
 **两层缺一不可**：光有自校验，模型可能「正确地做错事」；光有审批，人类要审的东西里混着大量「技术性错误」会很累。**`apply_patch` 把「技术正确性」这层扛下来（让审批时人类只需关注『内容意图』而非『格式对不对』），审批则专注「意图正确性」——这正是下一节要展开的人机协作基础设施。**
 
-***
+---
 
 ## 5. 参考资料
 
 **本节精讲的源码（唯一文件）**：
+
 - [apply-patch.ts](../../src/coding/tools/apply-patch.ts)（232 行）
   - 类型定义 `HunkLine`/`PatchHunk`/`PatchFile`：[L12-L26](../../src/coding/tools/apply-patch.ts#L12-L26)
   - hunk 头正则 `HUNK_HEADER`：[L10](../../src/coding/tools/apply-patch.ts#L10)
@@ -770,12 +760,14 @@ index 3a2f1b..8c4d2e 100644
   - `invoke` 编排（路径校验/禁删/写盘/兜底）：[L186-L231](../../src/coding/tools/apply-patch.ts#L186-L231)
 
 **co-located 测试（[第 21 节](./00-roadmap.md) 会讲这套约定）**：
+
 - [apply-patch.test.ts](../../src/coding/tools/__tests__/apply-patch.test.ts)
   - 简单补丁应用成功（`beta`→`gamma`）：[L20-L44](../../src/coding/tools/__tests__/apply-patch.test.ts#L20-L44)
   - 拒绝 `/dev/null` 删除 → `DELETE_NOT_SUPPORTED`：[L46-L61](../../src/coding/tools/__tests__/apply-patch.test.ts#L46-L61)
   - 行数不匹配 → `PATCH_APPLY_FAILED` + `Hunk count mismatch`：[L63-L85](../../src/coding/tools/__tests__/apply-patch.test.ts#L63-L85)
 
 **上游依赖章节**：
+
 - [第 12 节 · 工具地基与文件读写](./12-tool-foundation-file-io.md)：`okToolResult`/`errorToolResult`（本节所有返回的地基）、`str_replace` 的「唯一匹配」软约束（`apply_patch` 是它的硬化版）、`write_file` 的「自动建父目录」（本节 ②e 同款）
 - [第 8 节 · 工具结果处理管线](./08-tool-result-pipeline.md)：`inferToolErrorKind`（三个错误码的分类）、`getToolResultPolicy`（`apply_patch` 的 `includeData: true`）
 - [第 13 节 · 搜索与系统工具](./13-search-system-tools.md)：`RG_NOT_FOUND`（与 `DELETE_NOT_SUPPORTED` 构成「唯一类别」的镜像）、Q3「重复 vs 抽象」的务实取舍（与本节「不引 diff 库」同源）
@@ -783,19 +775,21 @@ index 3a2f1b..8c4d2e 100644
 - [第 4 节 · Tool 工具系统](./04-tool.md)：`defineTool` 工厂与 `StructuredToolResult` 契约（本节结果形状的源头）
 
 **关联源码（本节引用但不精讲）**：
+
 - 审批名单：[requires-approval.ts](../../src/coding/permissions/requires-approval.ts)、装配处：[lead-agent.ts](../../src/coding/agents/lead-agent.ts#L103-L117)
 - 结果 policy 与分类：[tool-result-policy.ts](../../src/agent/tool-result-policy.ts#L34-L41)、[tool-result-runtime.ts](../../src/agent/tool-result-runtime.ts#L24-L32)
 - 工具编写规范：[code-convention.md](../code-convention.md)（`description` 第一参数、SCREAMING_SNAKE 错误码、`Bun.file` 优先）
 
 **外部资料**：
-- unified diff 格式规范（GNU diffutils）：<https://www.gnu.org/software/diffutils/manual/html_node/Unified-Format.html>
-- GNU `patch` 与 fuzz factor（「模糊匹配」的经典实现，与本节「严格」对照）：<https://www.gnu.org/software/diffutils/manual/html_node/Inexact.html>
-- `git apply` 文档（`--recount`/`--3way` 等「尽量成功」的开关）：<https://git-scm.com/docs/git-apply>
-- OpenAI Codex CLI 的 `apply_patch` 自定义格式（3.2 对比）：<https://github.com/openai/codex>
-- Aider 的编辑格式 benchmark（whole/diff/udiff 的实证对比，3.3）：<https://aider.chat/docs/leaderboards/>
-- Bun `Bun.file` 读写 API（`exists`/`text`/`write`）：<https://bun.sh/docs/api/file-io>
 
-***
+- unified diff 格式规范（GNU diffutils）：[https://www.gnu.org/software/diffutils/manual/html_node/Unified-Format.html](https://www.gnu.org/software/diffutils/manual/html_node/Unified-Format.html)
+- GNU `patch` 与 fuzz factor（「模糊匹配」的经典实现，与本节「严格」对照）：[https://www.gnu.org/software/diffutils/manual/html_node/Inexact.html](https://www.gnu.org/software/diffutils/manual/html_node/Inexact.html)
+- `git apply` 文档（`--recount`/`--3way` 等「尽量成功」的开关）：[https://git-scm.com/docs/git-apply](https://git-scm.com/docs/git-apply)
+- OpenAI Codex CLI 的 `apply_patch` 自定义格式（3.2 对比）：[https://github.com/openai/codex](https://github.com/openai/codex)
+- Aider 的编辑格式 benchmark（whole/diff/udiff 的实证对比，3.3）：[https://aider.chat/docs/leaderboards/](https://aider.chat/docs/leaderboards/)
+- Bun `Bun.file` 读写 API（`exists`/`text`/`write`）：[https://bun.sh/docs/api/file-io](https://bun.sh/docs/api/file-io)
+
+---
 
 ## 6. 小结与下一节预告
 

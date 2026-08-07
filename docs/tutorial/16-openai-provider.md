@@ -4,7 +4,8 @@
 >
 > 对应 roadmap 为本节设定的**核心问题**：
 >
-> > 第 2 节的内部 `Message` 如何翻译成 OpenAI 的 wire 格式？第 3 节约定的「完整快照」流式碎片如何拼回？
+>> 第 2 节的内部 `Message` 如何翻译成 OpenAI 的 wire 格式？第 3 节约定的「完整快照」流式碎片如何拼回？
+>>
 >
 > **一句边界声明**：本节精讲 **`src/community/openai/` 下的五个文件**，它们分工极其清晰，恰好对应「翻译」和「累积」两大职责——
 >
@@ -18,7 +19,7 @@
 >
 > ⚠️ **一处「留到后面」的诚实标注**：本节是 `ModelProvider` 的**第一个**实现。它有意不去和第二家厂商做详细对比——那是 [第 17 节](./00-roadmap.md) Anthropic Provider 的任务（「先立范本，后作对照」）。本节只在个别地方点一句「Anthropic 那边会不同」，把系统性的「共性 vs 差异」留到下一节。
 
-***
+---
 
 ## 0. 承上启下
 
@@ -38,7 +39,7 @@
 
 准备好了。我们先不看任何一个具体文件，而是先建立「**一个壳、两大职责、五个文件**」的全局地图——因为本节最容易让人迷路的地方，是「翻译」和「累积」这两件事交织在一起。有了地图，再逐个击破。
 
-***
+---
 
 ## 1. 主题内容
 
@@ -527,31 +528,23 @@ export const MODEL_PROVIDERS: ModelProviderConfig[] = [
 
 **一句话总括本节主题**：**`OpenAIModelProvider` 是 [第 3 节](./03-model.md) `ModelProvider` 契约的第一个真实实现，它用一个「薄壳」把两大职责外包出去——「静态翻译」（[utils.ts](../../src/community/openai/utils.ts) 三个纯函数，做内部 `Message` ⇄ OpenAI wire 的双向可逆翻译，兑现第 2 节的「wire vs internal」分界）和「动态累积」（[stream-utils.ts](../../src/community/openai/stream-utils.ts) 的 `StreamAccumulator`，把增量碎片拼成第 3 节约定的「完整快照」，并以「参数没解析成功前绝不吐出 tool_use」的严谨兜住下游）；再靠「`baseURL` 原样透传 + `reasoning_content` 类型补丁」，让这一个 provider 服务了近十家「OpenAI 兼容」厂商。至此，那台从第 5 节就造好、却一直空转的 Agent 机器，终于接上了真实的动力源。**
 
-***
+---
 
 ## 2. 亮点与关键设计
 
 明确标注哪些是「妙笔」、哪些是「关键决策」：
 
 1. **【核心妙笔】`StreamAccumulator` 坚持「参数没解析成功前，绝不吐出 tool_use」。** `snapshot()` 里那句 `if (!parsed && !isFinal) continue`——流式中途只要工具参数 JSON 还没拼完整、`JSON.parse` 失败，就把这个 tool_use「扣留」，绝不让下游看到一个 input 残缺的半成品。**这保证了「下游任何时候观察到的 tool_use，其 input 一定完整合法」**，是第 6 节并行工具、第 15 节 `ask_user_question` 那份「拿到的永远是干净工具调用」的底层来源（1.7）。
-
 2. **【核心妙笔】把「流式复杂度」整个封进 `StreamAccumulator`，让上层只需两行。** 碎片续接、多工具按 index 归组、半个 JSON 容错、扣留与兜底、`streaming` 标记的打与摘、usage 作终止哨兵——**七种复杂度全压在 98 行的累积器里**，对外只暴露 `push` / `snapshot`。上层 `stream` 只有 `acc.push(chunk); yield acc.snapshot()`。这是第 3 节「把复杂度收敛到少数几个 provider」的具体兑现（1.2、1.7）。
-
 3. **【关键决策】`invoke` / `stream` 共享 `_baseChatCompletionParams`。** 两个方法的差异只有「流不流」，公共的「翻译消息/工具 + 设默认参数」抽成一个私有方法，既 DRY 又让两个入口的差异一目了然（1.2）。
-
 4. **【妙笔】出入翻译「成对镜像」，保证 round-trip 一致。** `convertToOpenAIMessages`（出：`JSON.stringify(input)`、thinking→reasoning_content）与 `parseAssistantMessage`（入：`JSON.parse(arguments)`、reasoning_content→thinking）互为逆操作——**这是多轮对话不「串味」的前提**：本轮产出的消息翻译成 wire、下轮作为历史再翻译回来，语义必须等价（1.3、1.4）。
-
 5. **【关键决策】`temperature: 0` 作为 Coding 场景的默认值，且可被 `options` 覆盖。** `...options` 放在 `temperature: 0` 之后，用「后者覆盖前者」让用户能改。默认 `0` 是因为 Coding 任务追求**确定性、可复现**，而非创造性（1.2，Q5 深入）。
-
 6. **【妙笔】`usage` 一字段两用：既是 token 统计，又是「流结束」哨兵。** 靠 `stream_options: { include_usage: true }` 让 OpenAI 在流末补一个带 usage 的 chunk；累积器用 `isFinal = usage !== undefined` 判断流是否结束，进而决定「扣留还是兜底吐出 tool_use」「打不打 streaming 标记」。一个信号，驱动了两处关键分支（1.2、1.7）。
-
 7. **【关键决策】`types.ts` 用交叉类型给 SDK「打补丁」，而非到处 `as any`。** `reasoning_content` 是官方 SDK 类型没有、但兼容厂商常返回的字段。用 `官方类型 & OpenAIReasoningFields` 集中、类型安全地补好，其余文件 import 增强类型即可——保住类型检查，又把「SDK 类型不全」的处理收敛到一个文件（1.6，Q3）。
-
 8. **【妙笔】`baseURL` 原样透传，让一个 provider 服务近十家「OpenAI 兼容」厂商。** DeepSeek、Qwen、GLM、Kimi、Minimax、Volcengine…… 都是「换个 `baseURL` 的 OpenAI API」。1.2 那个「毫不设防的透传」在 1.8 兑现成巨大的复用红利——注册表里十一家有十家走这一个 provider（1.8）。
-
 9. **【一致性】出站翻译的「难度阶梯」印证第 2 节的设计意图。** `system`/`user` 零翻译（格式天生贴近 wire）、`tool` 一拆多、`assistant` 最难（三段拆三字段 + 对象转字符串 + 空数组归一）——翻译成本被有意分配到「只写一次的 provider」，换取无数消费点的便利（1.3）。
 
-***
+---
 
 ## 3. 工业对比
 
@@ -604,16 +597,16 @@ LangChain 的流式（`.stream()`）吐给消费方的是 `AIMessageChunk`——
 
 ### 3.5 一览表
 
-| 维度 | Helixent OpenAI Provider | OpenAI SDK 高层 `stream()` | LangChain | LiteLLM/OpenRouter |
-| --- | --- | --- | --- | --- |
-| 流式对外语义 | **完整快照**（provider 内累积） | 累积后的 **wire 对象** | **增量 chunk**（`concat`） | 视底层而定 |
-| tool-call 完整性保证 | **参数没解析成功不吐出** | SDK 行为，未必保证 | 消费方自理 | 网关行为 |
-| 多厂商策略 | **一协议一 provider + 兼容复用** | 单一 OpenAI | 各家 integration | **统一网关** |
-| 思考链处理 | `reasoning_content` 类型补丁 | 官方不透明 | 各 integration 各异 | 网关归一 |
-| 额外依赖 | 仅官方 `openai` SDK | 官方 SDK | LangChain 全家桶 | LiteLLM/网关 |
-| 代码量 | **极小（五个文件）** | — | 大 | 中（含网关） |
+| 维度                 | Helixent OpenAI Provider               | OpenAI SDK 高层`stream()` | LangChain                          | LiteLLM/OpenRouter |
+| -------------------- | -------------------------------------- | --------------------------- | ---------------------------------- | ------------------ |
+| 流式对外语义         | **完整快照**（provider 内累积）  | 累积后的**wire 对象** | **增量 chunk**（`concat`） | 视底层而定         |
+| tool-call 完整性保证 | **参数没解析成功不吐出**         | SDK 行为，未必保证          | 消费方自理                         | 网关行为           |
+| 多厂商策略           | **一协议一 provider + 兼容复用** | 单一 OpenAI                 | 各家 integration                   | **统一网关** |
+| 思考链处理           | `reasoning_content` 类型补丁         | 官方不透明                  | 各 integration 各异                | 网关归一           |
+| 额外依赖             | 仅官方`openai` SDK                   | 官方 SDK                    | LangChain 全家桶                   | LiteLLM/网关       |
+| 代码量               | **极小（五个文件）**             | —                          | 大                                 | 中（含网关）       |
 
-***
+---
 
 ## 4. 深度解释：为什么这样设计？不这样会怎样？
 
@@ -638,10 +631,10 @@ LangChain 的流式（`.stream()`）吐给消费方的是 `AIMessageChunk`——
 
 把两个阶段摆在一起看：
 
-| 阶段 | 判据 | 若参数 JSON 没解析成功 | 主要风险 | 最优策略 |
-| --- | --- | --- | --- | --- |
-| **流式中途** | `!isFinal`（usage 未到） | **扣留**（`continue`） | 过早暴露残缺 tool_use → 下游误用 | 宁缺毋滥（等它拼完） |
-| **流已结束** | `isFinal`（usage 到了） | **兜底吐出**（`input = {}`） | 合法工具调用彻底消失 | 有总比没有强 |
+| 阶段               | 判据                       | 若参数 JSON 没解析成功               | 主要风险                          | 最优策略             |
+| ------------------ | -------------------------- | ------------------------------------ | --------------------------------- | -------------------- |
+| **流式中途** | `!isFinal`（usage 未到） | **扣留**（`continue`）       | 过早暴露残缺 tool_use → 下游误用 | 宁缺毋滥（等它拼完） |
+| **流已结束** | `isFinal`（usage 到了）  | **兜底吐出**（`input = {}`） | 合法工具调用彻底消失              | 有总比没有强         |
 
 **流式中途「扣留」的逻辑**（Q1 已讲）：反正流还没完，这个工具调用的参数**下一帧很可能就拼齐了**，此刻扣留它零成本——等它 `JSON.parse` 成功，下一帧自然让它现身。**「等得起」是中途扣留的前提。**
 
@@ -709,13 +702,14 @@ LangChain 的流式（`.stream()`）吐给消费方的是 `AIMessageChunk`——
 
 > 💡 **这正是 roadmap 为「先 OpenAI 后 Anthropic」排序的深意**：**先用 OpenAI 立一个「provider 长什么样」的完整范本**，再用 Anthropic 去「对照」——当你看第 17 节时，`model-provider.ts`/`utils.ts`/`stream-utils.ts` 的**骨架**你已经熟悉了，注意力就能全部集中到「**协议差异**」上（system 抽取、事件流累积、signature、budget_tokens）。**第一个实现教你『provider 的共性骨架』，第二个实现教你『厂商的差异所在』——这就是「先范本、后对照」的教学价值**，也印证了 `ModelProvider` 这个抽象的成功：它让「换一家厂商」变成「只改协议差异处，骨架照旧」。
 
-***
+---
 
 ## 5. 参考资料
 
 **本节精讲的源码（五个文件）**：
 
 `src/community/openai/`：
+
 - [model-provider.ts](../../src/community/openai/model-provider.ts)（99 行）——`OpenAIModelProvider` 编排壳
   - 构造函数（`baseURL`/`apiKey` 原样透传）：[L24-L29](../../src/community/openai/model-provider.ts#L24-L29)
   - `invoke`（非流式：create → parseAssistantMessage）：[L31-L49](../../src/community/openai/model-provider.ts#L31-L49)
@@ -736,10 +730,12 @@ LangChain 的流式（`.stream()`）吐给消费方的是 `AIMessageChunk`——
 - [openai/index.ts](../../src/community/openai/index.ts)（1 行）——桶文件，只导出 `model-provider`
 
 **co-located 测试（[第 21 节](./00-roadmap.md) 会讲这套约定）**：
+
 - [utils.test.ts](../../src/community/openai/__tests__/utils.test.ts)——出站四种 role 翻译 / 入站解析 / 工具转换 / 各种边界（空 content、混合内容、一拆多）
 - [stream-utils.test.ts](../../src/community/openai/__tests__/stream-utils.test.ts)——文本累加 / reasoning 累加 / tool_calls 跨 chunk 拼接 / **流式扣留残缺 tool_use** / **isFinal 兜底吐出** / usage 捕获 / 多工具保序 / 空 chunk
 
 **上游依赖章节**：
+
 - [第 3 节 · Model 与 ModelProvider](./03-model.md)：本节要实现的 `ModelProvider` 契约（`invoke`/`stream` 一对、「每次 yield 完整快照」、`streaming` 打标与摘除、`usage` 映射）——本节是这份契约的**第一个真实实现**
 - [第 2 节 · Message 消息类型系统](./02-message.md)：内部 `Message` 的四种 role 与「wire vs internal」分界（`snake_case` 内容段贴近 OpenAI wire）——本节的翻译逻辑处处以它为前提
 - [第 4 节 · Tool 工具系统](./04-tool.md)：`defineTool` 与 `parameters.toJSONSchema()`（`convertToOpenAITools` 是「一处定义、三处受益」中「运行期 JSON Schema」的真实调用点）
@@ -747,24 +743,27 @@ LangChain 的流式（`.stream()`）吐给消费方的是 `AIMessageChunk`——
 - [第 6 节 · 并行工具调度](./06-parallel-tools.md)：多个 tool_use 的来源（累积器按 index 归组的对应场景）；「参数没齐不吐 tool_use」正是为了保证它拿到干净的工具调用
 
 **下游承接章节（本节埋的接口）**：
+
 - [第 17 节 · Anthropic Provider](./00-roadmap.md)：`ModelProvider` 的第二个实现，与本节「先范本、后对照」（system 抽取、事件流累积、signature、budget_tokens、baseURL 特殊处理等差异，见 Q6）
 - [第 18 节 · CLI 入口、配置与持久化](./00-roadmap.md)：`OpenAIModelProvider` 如何在 `cli/index.tsx` 被实例化、`MODEL_PROVIDERS` 注册表（近十家「OpenAI 兼容」厂商共用本 provider，见 1.8）、`baseURL`/`apiKey` 从配置读入
 
 **关联源码（本节引用但不精讲）**：
+
 - 契约定义：[model-provider.ts](../../src/foundation/models/model-provider.ts)、[model.ts](../../src/foundation/models/model.ts)
 - 消费端：[agent.ts `_think` L179-L204](../../src/agent/agent.ts#L179-L204)
 - 装配处：[cli/index.tsx L44-L62](../../src/cli/index.tsx#L44-L62)、[model-providers.ts](../../src/cli/model-providers.ts)
 - 对照实现：[anthropic/model-provider.ts](../../src/community/anthropic/model-provider.ts)、[anthropic/stream-utils.ts](../../src/community/anthropic/stream-utils.ts)（第 17 节精讲）
 
 **外部资料**：
-- OpenAI Chat Completions API（`stream` / `stream_options.include_usage` / `tool_calls`）：<https://platform.openai.com/docs/api-reference/chat/create>
-- OpenAI Node SDK（`chat.completions.create` 底层流 vs `.stream()` 高层封装，3.1 对比）：<https://github.com/openai/openai-node>
-- Server-Sent Events（SSE，流式底层传输机制）：<https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events>
-- DeepSeek `reasoning_content` 字段（1.6 补丁的现实来源）：<https://api-docs.deepseek.com/guides/reasoning_model>
-- TypeScript 交叉类型（Intersection Types，`types.ts` 打补丁的语言机制）：<https://www.typescriptlang.org/docs/handbook/2/objects.html#intersection-types>
-- LiteLLM（统一网关方案，3.3 对比）：<https://github.com/BerriAI/litellm>
 
-***
+- OpenAI Chat Completions API（`stream` / `stream_options.include_usage` / `tool_calls`）：[https://platform.openai.com/docs/api-reference/chat/create](https://platform.openai.com/docs/api-reference/chat/create)
+- OpenAI Node SDK（`chat.completions.create` 底层流 vs `.stream()` 高层封装，3.1 对比）：[https://github.com/openai/openai-node](https://github.com/openai/openai-node)
+- Server-Sent Events（SSE，流式底层传输机制）：[https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events)
+- DeepSeek `reasoning_content` 字段（1.6 补丁的现实来源）：[https://api-docs.deepseek.com/guides/reasoning_model](https://api-docs.deepseek.com/guides/reasoning_model)
+- TypeScript 交叉类型（Intersection Types，`types.ts` 打补丁的语言机制）：[https://www.typescriptlang.org/docs/handbook/2/objects.html#intersection-types](https://www.typescriptlang.org/docs/handbook/2/objects.html#intersection-types)
+- LiteLLM（统一网关方案，3.3 对比）：[https://github.com/BerriAI/litellm](https://github.com/BerriAI/litellm)
+
+---
 
 ## 6. 小结与下一节预告
 
