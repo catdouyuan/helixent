@@ -72,6 +72,10 @@ ${lines}
 </todo_reminder>`;
 }
 
+function getActiveTodos(todos: TodoItem[]): TodoItem[] {
+  return todos.filter((t) => t.status !== "completed" && t.status !== "cancelled");
+}
+
 export function createTodoSystem(): { tool: Tool; middleware: AgentMiddleware } {
   const store: TodoItem[] = [];
   let stepsSinceLastWrite = Infinity;
@@ -121,13 +125,15 @@ export function createTodoSystem(): { tool: Tool; middleware: AgentMiddleware } 
       stepsSinceLastWrite++;
       stepsSinceLastReminder++;
 
+      const activeTodos = getActiveTodos(store);
+
       if (
-        store.length > 0 &&
+        activeTodos.length > 0 &&
         stepsSinceLastWrite >= REMINDER_CONFIG.STEPS_SINCE_WRITE &&
         stepsSinceLastReminder >= REMINDER_CONFIG.STEPS_BETWEEN_REMINDERS
       ) {
         stepsSinceLastReminder = 0;
-        return { prompt: modelContext.prompt + formatReminder(store) };
+        return { prompt: modelContext.prompt + formatReminder(activeTodos) };
       }
     },
 
