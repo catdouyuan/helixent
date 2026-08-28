@@ -17,7 +17,7 @@ import {
   type AskUserQuestionParameters,
   type AskUserQuestionResult,
 } from "../tools/ask-user-question";
-import { bashTool } from "../tools/bash";
+import { createBashTool } from "../tools/bash";
 import { fileInfoTool } from "../tools/file-info";
 import { globSearchTool } from "../tools/glob-search";
 import { grepSearchTool } from "../tools/grep-search";
@@ -61,6 +61,8 @@ export async function createCodingAgent({
   }
   const { tool: todoTool, middleware: todoMiddleware } = createTodoSystem();
 
+  const bashTool = createBashTool({ cwd });
+
   const askUserQuestionTool = askUserQuestion ? createAskUserQuestionTool(askUserQuestion) : null;
 
   const middlewares = [createSkillsMiddleware(skillsDirs), todoMiddleware];
@@ -93,6 +95,19 @@ Use the given tools and skills to perform parallel/sequential operations and sol
 - Do not repeat the same failing tool call with unchanged invalid input.
 - Use tool result summaries and error codes to decide the next step.
 </tool_usage>
+
+<shell>
+The bash tool executes commands using the configured platform shell.
+
+- HELIXENT_SHELL controls the shell explicitly.
+- On Windows without HELIXENT_SHELL, the order is PowerShell 7,
+  Windows PowerShell 5.1, then cmd.exe.
+- On macOS/Linux without HELIXENT_SHELL, the order is zsh, bash, then sh.
+- Git Bash and WSL are never selected automatically.
+- Command syntax is not translated between shells.
+- Use PowerShell syntax when the active shell is PowerShell.
+- Use POSIX syntax only when Git Bash, WSL, bash, zsh, or sh is selected.
+</shell>
 
 <notes>
 - Never try to start a local static server. Let the user do it.

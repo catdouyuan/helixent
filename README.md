@@ -29,6 +29,7 @@ https://github.com/user-attachments/assets/4ad89f14-e338-43e4-82ce-91cb83d58be2
   - [Add a New Model](#add-a-new-model)
   - [Remove a Model](#remove-a-model)
   - [Set the Default Model](#set-the-default-model)
+- [Shell Configuration](#shell-configuration)
 - [How to Contribute](#how-to-contribute)
   - [Develop & Build from Source](#develop-build-from-source)
     - [1. Install Dependencies](#1-install-dependencies)
@@ -137,6 +138,34 @@ Or select from the list of configured models:
 
 ```bash
 helixent config model set-default
+```
+
+## Shell Configuration
+
+The `bash` tool executes commands through the active platform shell. By default it
+selects the first available shell in this order:
+
+- Windows: PowerShell 7 (`pwsh`), Windows PowerShell 5.1 (`powershell`), then `cmd`
+- macOS/Linux: `zsh`, then `bash`, then `sh`
+
+Set `HELIXENT_SHELL` to explicitly select a supported shell. Supported values are
+`auto`, `pwsh`, `powershell`, `cmd`, `zsh`, `bash`, `sh`, `git-bash`, and `wsl`.
+An empty or unset value is equivalent to `auto`. Explicitly selected shells are
+not replaced by a fallback when unavailable; the command reports the corresponding
+shell error instead. Git Bash and WSL are opt-in and are never selected by default.
+
+Shell syntax is passed through unchanged. Use PowerShell or `cmd` syntax when
+those shells are active, and POSIX syntax for `zsh`, `bash`, `sh`, Git Bash, or WSL.
+
+```powershell
+$env:HELIXENT_SHELL = "git-bash"
+helixent
+$env:HELIXENT_SHELL = "wsl"
+helixent
+```
+
+```bash
+HELIXENT_SHELL=bash helixent
 ```
 
 ---

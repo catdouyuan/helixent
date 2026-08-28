@@ -7,7 +7,7 @@
 >> 这些「探索环境」的工具分别解决什么问题？为什么 `bash` 要这样处理输出和中断？
 >>
 >
-> **一句边界声明**：本节精讲 **7 个工具文件**——万能逃生舱 [bash.ts](../../src/coding/tools/bash.ts)（36 行），三个「搜索/浏览」工具 [glob-search.ts](../../src/coding/tools/glob-search.ts)、[grep-search.ts](../../src/coding/tools/grep-search.ts)、[list-files.ts](../../src/coding/tools/list-files.ts)，以及三个「元信息/系统操作」工具 [file-info.ts](../../src/coding/tools/file-info.ts)、[mkdir.ts](../../src/coding/tools/mkdir.ts)、[move-path.ts](../../src/coding/tools/move-path.ts)。它们全都**站在第 12 节的地基之上**（调 `ensureDirectoryPath`/`ensureAbsolutePath`、用 `truncateText`、返 `okToolResult`/`errorToolResult`），所以**本节必须在第 12 节之后读**。`bash` 与 `grep_search` 还会呼应 [第 5/6 节](./05-react-loop.md) 的 `AbortController`——这是本节两处独有的「可中断子进程」设计。
+> **一句边界声明**：本节精讲 **7 个工具文件**——万能逃生舱 [bash.ts](../../src/coding/tools/bash.ts)，三个「搜索/浏览」工具 [glob-search.ts](../../src/coding/tools/glob-search.ts)、[grep-search.ts](../../src/coding/tools/grep-search.ts)、[list-files.ts](../../src/coding/tools/list-files.ts)，以及三个「元信息/系统操作」工具 [file-info.ts](../../src/coding/tools/file-info.ts)、[mkdir.ts](../../src/coding/tools/mkdir.ts)、[move-path.ts](../../src/coding/tools/move-path.ts)。`bash` 使用同目录的 [shell.ts](../../src/coding/tools/shell.ts) 解析当前平台 Shell；其余工具全都**站在第 12 节的地基之上**（调 `ensureDirectoryPath`/`ensureAbsolutePath`、用 `truncateText`、返 `okToolResult`/`errorToolResult`），所以**本节必须在第 12 节之后读**。`bash` 与 `grep_search` 还会呼应 [第 5/6 节](./05-react-loop.md) 的 `AbortController`——这是本节两处独有的「可中断子进程」设计。
 
 ---
 
@@ -57,22 +57,37 @@
 
 想清楚这个分类，我们**从 A 组的 `bash` 开始逐个拆**——因为它最特殊（不返回结构化结果、要处理 signal），把它讲透，后六个就都是「同一套骨架的变奏」了。
 
-### 1.2 `bash` —— 万能逃生舱：`Bun.spawn` + `signal` 的可中断子进程（[bash.ts](../../src/coding/tools/bash.ts)）
+### 1.2 `bash` —— 万能逃生舱：Shell resolver + `Bun.spawn` + `signal`（[bash.ts](../../src/coding/tools/bash.ts)）
 
-`bash` 是本节唯一**不站在第 12 节地基上**的工具（它不校验路径、不返回 `okToolResult`）。全文只有 36 行，但每一行都值得琢磨。先看定义：
+`bash` 是本节唯一**不站在第 12 节地基上**的工具（它不校验路径、不返回 `okToolResult`）。它通过 `shell.ts` 的 resolver 选择执行环境，再保留裸 stdout / `Error:` 字符串协议。先看定义：
 
 ```ts
-export const bashTool = defineTool({
-  name: "bash",
-  description: "Execute a bash command in a unix-like environment",
-  parameters: z.object({
-    description: z
-      .string()
-      .describe("Explain why you want to execute the command. Always place `description` as the first parameter."),
-    command: z.string().describe("The bash command to execute."),
-  }),
-  invoke: async ({ command }, signal) => { /* ... */ },
-});
+export function createBashTool(options?: { cwd?: string }) {
+  const cwd = options?.cwd ?? process.cwd();
+  return defineTool({
+    name: "bash",
+    description: "Execute a command through the configured platform shell.",
+    parameters: z.object({
+      description: z.string(),
+      command: z.string().describe("The command to execute using the active shell syntax."),
+    }),
+    invoke: async ({ command }, signal) => {
+      const resolution = resolveShell();
+      if (!resolution.ok) {
+        return `Error: ${resolution.code}: ${resolution.message}`;
+      }
+      const proc = Bun.spawn({
+        cmd: [resolution.shell.executable, ...resolution.shell.buildArgs(command, cwd)],
+        cwd,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      // Register abort handling, then read stdout/stderr and exit status in parallel.
+    },
+  });
+}
+
+export const bashTool = createBashTool();
 ```
 
 **注意 `invoke` 的第二个参数 `signal`**——这是本节第一个真正用到它的工具（对比第 12 节所有工具的 `invoke` 都只有一个参数）。这个 `signal` 从哪来？回忆 [第 6 节](./06-parallel-tools.md)：Agent 在 [agent.ts `_act`](../../src/agent/agent.ts#L231) 里调 `tool.invoke(toolUse.input, signal)`，把主循环的 `AbortController.signal` 透传进来。`bash` 接住它，就能在用户中断时杀掉子进程。
@@ -81,48 +96,63 @@ export const bashTool = defineTool({
 
 ```ts
 invoke: async ({ command }, signal) => {
+  signal?.throwIfAborted();
+
+  const resolution = resolveShell();
+  if (!resolution.ok) {
+    return `Error: ${resolution.code}: ${resolution.message}`;
+  }
+
   const proc = Bun.spawn({
-    cmd: ["zsh", "-c", command],   // ← 注意：是 zsh，不是 bash
+    cmd: [resolution.shell.executable, ...resolution.shell.buildArgs(command, cwd)],
+    cwd,
     stdout: "pipe",
     stderr: "pipe",
   });
 
+  let onAbort: (() => void) | undefined;
   if (signal) {
-    const onAbort = () => proc.kill();
+    onAbort = () => proc.kill();
     signal.addEventListener("abort", onAbort, { once: true });
-    void proc.exited.then(() => signal.removeEventListener("abort", onAbort));
   }
 
-  const output = await new Response(proc.stdout).text();
-  const exitCode = await proc.exited;
-  if (exitCode !== 0) {
-    const stderr = await new Response(proc.stderr).text();
-    return `Error: Command ${command} failed with exit code ${exitCode}: ${stderr}`;
+  try {
+    const [output, stderr, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    if (exitCode !== 0) {
+      return `Error: Command ${command} failed with exit code ${exitCode}: ${stderr}`;
+    }
+    return output;
+  } finally {
+    if (signal && onAbort) signal.removeEventListener("abort", onAbort);
   }
-  return output;
 },
 ```
 
 **四个设计点，逐个看：**
 
-**① 用 `Bun.spawn` 启动子进程，`cmd: ["zsh", "-c", command]`。** 它把模型给的 `command` 字符串交给 `zsh -c` 去解释执行——这样管道 `|`、重定向 `>`、`&&` 等 shell 语法才能生效。**这里有个小小的"名不副实"**：工具叫 `bash`、描述说 "Execute a bash command"，但实现里用的是 **`zsh`**（macOS 默认 shell）。对绝大多数命令这没区别，但严格说这是个值得记住的实现细节（[bash.test.ts](../../src/coding/tools/__tests__/bash.test.ts#L7-L9) 的测试还专门检查了 `/bin/zsh` 或 `/usr/bin/zsh` 是否存在，存在才跑测试）。
+**① 通过 `shell.ts` 的 resolver 选择并启动子进程。** `resolveShell()` 根据 `HELIXENT_SHELL`、当前平台和 PATH 探测出一个 `ShellSpec`，再由 `buildArgs(command, cwd)` 生成启动参数。未显式配置时，Windows 按 `pwsh` → `powershell` → `cmd` 选择，macOS/Linux 按 `zsh` → `bash` → `sh` 选择；Git Bash 与 WSL 只能显式启用。命令文本不会在 Shell 之间自动翻译，因此模型必须使用当前 Shell 的语法。
 
 **② 可中断：把 `abort` 事件桥接到 `proc.kill()`。** 这是本工具**最精妙的一段**，也是呼应 [第 5 节](./05-react-loop.md) `AbortController` 的落地点：
 
 ```ts
 if (signal) {
-  const onAbort = () => proc.kill();                       // 用户中断 → 杀子进程
+  const onAbort = () => proc.kill();                       // 用户中断 -> 杀子进程
   signal.addEventListener("abort", onAbort, { once: true });
-  void proc.exited.then(() => signal.removeEventListener("abort", onAbort));  // 进程正常结束 → 摘掉监听器
 }
+
+// stdout/stderr/exitCode 完成或失败后，在 finally 中摘掉监听器
 ```
 
 拆开看它做了两件事：
 
 - **订阅中断**：给 `signal` 注册一个 `abort` 监听器，一旦触发就 `proc.kill()`。`{ once: true }` 表示只触发一次就自动移除。**为什么需要它？** 想象模型跑了一条 `npm install`（要 30 秒），用户等不及按了 Ctrl-C——如果没有这段，子进程会**继续在后台跑**，成为「孤儿进程」。有了它，中断信号立刻传导到子进程、把它杀掉。
-- **防泄漏地摘监听器**：`void proc.exited.then(() => signal.removeEventListener(...))`——**当进程正常结束时，主动把刚才注册的监听器摘掉**。为什么？因为 `signal`（来自 Agent 的 `AbortController`）的生命周期比单个 bash 命令**长得多**（它贯穿整个 Agent 循环）。如果每跑一条 bash 命令都往 `signal` 上挂一个监听器却不摘，跑一百条命令就积累一百个失效监听器——**内存泄漏**。这一行 `removeEventListener` 就是防这个的。`void` 前缀表示「我故意不 await 这个 Promise，让它在后台自己完成」。
+- **防泄漏地摘监听器**：输出读取和进程退出统一放在 `try/finally` 中，`finally` 调用 `removeEventListener(...)`。因为 `signal`（来自 Agent 的 `AbortController`）的生命周期比单个 bash 命令长得多，如果每跑一条命令都只挂不摘，监听器会持续累积。
 
-**③ 先读 stdout，再等退出码，失败才读 stderr。** 注意顺序：`await new Response(proc.stdout).text()` 先把标准输出读干净，再 `await proc.exited` 拿退出码。**只有 `exitCode !== 0`（失败）时，才去读 `stderr`** 并拼进错误信息。这是「按需读取」——成功时根本不碰 stderr。
+**③ 并行读取 stdout、stderr 和退出码。** 三者通过 `Promise.all` 同时消费，避免子进程大量写入 stderr 时管道填满、进而与父进程互相等待。成功时仍只返回 stdout；失败时把已读取的 stderr 拼进兼容错误格式。
 
 **④ 结果形状：成功吐裸 stdout，失败吐 `Error:` 前缀字符串——又一个"不返回结构化结果"的工具。** 这是 `bash` 和第 12 节 `read_file` 的**共同点**：它们都**不用** `okToolResult`/`errorToolResult`，而是直接返回字符串。
 
@@ -495,7 +525,7 @@ if (policy.preferSummaryOnly || !policy.includeData) {
                                                     │ 仅 spawn 子进程的工具接住 signal
    ┌──────────────────【coding/tools 探索工具】─────┼──────────────────────────────┐
    │                                                ▼                              │
-   │  A. bash ───────────► Bun.spawn(["zsh","-c",cmd]) + onAbort→kill              │
+   │  A. bash ───────────► resolveShell() + Bun.spawn(spec) + onAbort→kill          │
    │     └ 成功=裸stdout / 失败="Error:..."（不走 okToolResult）                    │
    │                                                                               │
    │  B. glob_search ─┐                                                            │
@@ -663,7 +693,7 @@ Helixent 因为**面向「编程」这个垂直领域**，才值得把「上下�
 
 **co-located 测试（第 21 节会讲这套约定）**：
 
-- [bash.test.ts](../../src/coding/tools/__tests__/bash.test.ts)（成功吐 stdout、失败 `Error:` 前缀、`skipIf` 无 zsh 时跳过）
+- [bash.test.ts](../../src/coding/tools/__tests__/bash.test.ts)（跨平台 Shell 执行、成功吐 stdout、失败 `Error:` 前缀、`cwd` 与中断）
 - [glob-search.test.ts](../../src/coding/tools/__tests__/glob-search.test.ts)（精确命中 `*.ts`、`INVALID_DIRECTORY`）
 - [grep-search.test.ts](../../src/coding/tools/__tests__/grep-search.test.ts)（`RG_NOT_FOUND` 与正常匹配双兼容、`INVALID_DIRECTORY`）
 - [list-files.test.ts](../../src/coding/tools/__tests__/list-files.test.ts)（递归、排序、目录尾斜杠、`INVALID_DIRECTORY`）
@@ -697,7 +727,7 @@ Helixent 因为**面向「编程」这个垂直领域**，才值得把「上下�
 
 本节我们把 Agent「探索陌生环境」的 7 件工具逐一拆开，按「解决什么问题」分成三组：
 
-- **A 组 · 万能逃生舱 `bash`**：`Bun.spawn(["zsh","-c",cmd])` 跑任意命令，用 `signal → proc.kill()` + 结束后 `removeEventListener` 实现「可中断且不泄漏」；成功吐裸 stdout、失败用 `Error:` 前缀编码（被第 8 节识别）。能力最全、最危险、必过审批（1.2）。
+- **A 组 · 万能逃生舱 `bash`**：通过 `resolveShell()` 与 `ShellSpec.buildArgs()` 跑任意命令，用 `signal → proc.kill()` + 结束后 `removeEventListener` 实现「可中断且不泄漏」；成功吐裸 stdout、失败用 `Error:` 前缀编码（被第 8 节识别）。能力最全、最危险、必过审批（1.2）。
 - **B 组 · 搜索/浏览 `glob_search`/`grep_search`/`list_files`**：共享「校验（`ensureDirectoryPath`）→ 执行 → 截断（`truncateText`）→ 封装（`okToolResult`）」四步骨架；`grep_search` 额外处理 rg 子进程（signal、exit1 不算错、`RG_NOT_FOUND` 优雅降级）；`list_files` 有稳定排序、目录尾斜杠、深度受控递归三个体贴细节（1.3~1.5）。
 - **C 组 · 元信息/系统 `file_info`/`mkdir`/`move_path`**：最轻量的「`ensureAbsolutePath` → 一次系统调用 → try/catch 兜底」；`mkdir` 默认递归、`move_path` 双路径校验用两个错误码（1.6）。
 - **一条贯穿主线**：这 7 个工具生产的错误码（`INVALID_*`/`*_FAILED`/`RG_NOT_FOUND`）与第 8 节 `inferToolErrorKind` 精确对齐；六个工具靠第 8 节 `preferSummaryOnly` 只回摘要、data 留给 TUI——「机器可读」与「人可读」分离（1.7）。

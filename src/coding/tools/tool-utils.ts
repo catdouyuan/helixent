@@ -1,8 +1,8 @@
 import { stat } from "node:fs/promises";
-import { relative, resolve, sep } from "node:path";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 
 export function ensureAbsolutePath(path: string) {
-  if (!path.startsWith("/")) {
+  if (!isAbsolute(path)) {
     return { ok: false as const, error: `Path must be absolute: ${path}` };
   }
   return { ok: true as const, path };

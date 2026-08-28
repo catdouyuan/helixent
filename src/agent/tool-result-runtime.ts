@@ -12,7 +12,7 @@ export type ToolErrorKind =
 
 export type NormalizedToolSuccess = StructuredToolSuccess & {
   raw: unknown;
-};formatToolResultForMessage
+};
 
 export type NormalizedToolError = StructuredToolError & {
   errorKind: ToolErrorKind;

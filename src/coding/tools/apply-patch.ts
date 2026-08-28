@@ -1,5 +1,5 @@
 import { exists, mkdir } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, isAbsolute } from "node:path";
 
 import z from "zod";
 
@@ -189,7 +189,7 @@ export const applyPatchTool = defineTool({
       const changedFiles: string[] = [];
 
       for (const file of files) {
-        if (!file.newPath.startsWith("/")) {
+        if (!isAbsolute(file.newPath)) {
           return errorToolResult(`Patch paths must be absolute. Received: ${file.newPath}`, "INVALID_PATCH_PATH", {
             oldPath: file.oldPath,
             newPath: file.newPath,

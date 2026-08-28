@@ -29,6 +29,7 @@ https://github.com/user-attachments/assets/4ad89f14-e338-43e4-82ce-91cb83d58be2
   - [添加新模型](#添加新模型)
   - [删除模型](#删除模型)
   - [设置默认模型](#设置默认模型)
+- [Shell 配置](#shell-配置)
 - [如何贡献](#如何贡献)
   - [从源码开发与构建](#从源码开发与构建)
     - [1. 安装依赖](#1-安装依赖)
@@ -137,6 +138,32 @@ helixent config model set-default <model_name>
 
 ```bash
 helixent config model set-default
+```
+
+## Shell 配置
+
+`bash` 工具会通过当前平台的 Shell 执行命令。未设置配置时，默认选择顺序如下：
+
+- Windows：PowerShell 7（`pwsh`）、Windows PowerShell 5.1（`powershell`），最后是 `cmd`
+- macOS/Linux：`zsh`、`bash`，最后是 `sh`
+
+可通过 `HELIXENT_SHELL` 显式选择受支持的 Shell。支持的值为
+`auto`、`pwsh`、`powershell`、`cmd`、`zsh`、`bash`、`sh`、`git-bash` 和 `wsl`。
+变量未设置或为空时等同于 `auto`。显式选择的 Shell 不可用时不会自动回退，
+而是返回对应的 Shell 错误。Git Bash 和 WSL 只能显式启用，不会参与默认探测。
+
+命令语法不会在 Shell 之间自动转换。当前 Shell 为 PowerShell 或 `cmd` 时使用
+对应语法；选择 `zsh`、`bash`、`sh`、Git Bash 或 WSL 时使用 POSIX 语法。
+
+```powershell
+$env:HELIXENT_SHELL = "git-bash"
+helixent
+$env:HELIXENT_SHELL = "wsl"
+helixent
+```
+
+```bash
+HELIXENT_SHELL=bash helixent
 ```
 
 ---
