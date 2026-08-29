@@ -41,6 +41,9 @@ export interface McpServerState {
   resources: McpDiscoveredResource[];
   errorMessage?: string;
   stderrTail?: string;
+  /** Whether tools/resources discovery has completed (even when the result was empty). */
+  toolsFetched?: boolean;
+  resourcesFetched?: boolean;
 }
 
 /** A live client connection to a single MCP server. */
@@ -145,6 +148,8 @@ export class McpConnectionManager {
     if (state) {
       state.tools = [];
       state.resources = [];
+      state.toolsFetched = false;
+      state.resourcesFetched = false;
     }
   }
 
@@ -286,8 +291,24 @@ function classifyMcpError(error: unknown): McpServerStatus {
 }
 
 function describeMcpError(error: unknown, cfg: McpServerConfig): string {
-  if (isHttpUnauthorized(error)) {
-    return "401 Unauthorized — this server requires authentication. This build supports static headers only: add an `Authorization` header to the server's `headers` in .mcp.json.";
+  const status = httpStatusOf(error);
+  if (status === 401) {
+    return "HTTP 401 Unauthorized — this server requires authentication. This build supports static headers only: add an `Authorization` header to the server's `headers` in .mcp.json.";
+  }
+  if (status === 403) {
+    return "HTTP 403 Forbidden — the server rejected the credentials/request. Check the `Authorization` header in .mcp.json.";
+  }
+  if (status === 404) {
+    return "HTTP 404 Not Found — no MCP endpoint at this URL. Streamable HTTP servers usually expose a path such as /mcp; check the `url` in .mcp.json.";
+  }
+  if (status === 405) {
+    return "HTTP 405 Method Not Allowed — the server does not accept MCP requests at this endpoint. Check the `url` in .mcp.json.";
+  }
+  if (status === 429) {
+    return "HTTP 429 Too Many Requests — the server is rate limiting. Wait a moment and retry.";
+  }
+  if (status !== undefined && status >= 500) {
+    return `HTTP ${status} — the MCP server returned a server error. Check the server logs and the "url" in .mcp.json.`;
   }
   const code = (error as { code?: unknown } | null)?.code;
   if (code === "ENOENT") {
@@ -298,6 +319,22 @@ function describeMcpError(error: unknown, cfg: McpServerConfig): string {
     return "Permission denied spawning the MCP server process.";
   }
   return error instanceof Error ? error.message : String(error);
+}
+
+/** Extracts an HTTP status code (400-599) from a transport/connect error, if any. */
+function httpStatusOf(error: unknown): number | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  const e = error as { status?: unknown; code?: unknown; response?: { status?: unknown } };
+  const candidates = [e.status, e.code, e.response?.status];
+  for (const candidate of candidates) {
+    if (typeof candidate === "number" && candidate >= 400 && candidate < 600) return candidate;
+  }
+  const message = (error as { message?: unknown }).message;
+  if (typeof message === "string") {
+    const match = message.match(/\b([45]\d\d)\b/);
+    if (match) return Number(match[1]);
+  }
+  return undefined;
 }
 
 function isHttpUnauthorized(error: unknown): boolean {

@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, test } from "bun:test";
 
-import { createMcpTools, loadMcpConfig, McpConnectionManager } from "..";
+import { createMcpTools, fetchResourcesForClient, fetchToolsForClient, loadMcpConfig, McpConnectionManager } from "..";
 
 describe("MCP e2e (stdio, integration)", () => {
   let tempDir: string | null = null;
@@ -75,7 +75,66 @@ describe("MCP e2e (stdio, integration)", () => {
     expect(state?.status).toBe("error");
     expect(state?.errorMessage).toContain("executable not found");
   });
+
+  test("degrades when tools discovery fails instead of crashing", async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "helixent-mcp-e2e-"));
+    const fixture = join(import.meta.dir, "fixtures", "failing-discovery-server.ts");
+    await writeFile(
+      join(tempDir, ".mcp.json"),
+      JSON.stringify({ mcpServers: { broken: { command: process.execPath, args: [fixture] } } }),
+    );
+
+    const loaded = await loadMcpConfig({ cwd: tempDir });
+    manager = new McpConnectionManager(loaded.config, { manageProcessExit: false });
+    const tools = await createMcpTools(manager); // must not throw
+
+    expect(tools).toEqual([]);
+    const state = manager.getState("broken");
+    expect(state?.status).toBe("error");
+    expect(state?.errorMessage).toContain("discovery boom");
+  });
+
+  test("does not re-query a server that exposes zero tools/resources", async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "helixent-mcp-e2e-"));
+    const fixture = join(import.meta.dir, "fixtures", "empty-server.ts");
+    await writeFile(
+      join(tempDir, ".mcp.json"),
+      JSON.stringify({ mcpServers: { empty: { command: process.execPath, args: [fixture] } } }),
+    );
+
+    const loaded = await loadMcpConfig({ cwd: tempDir });
+    manager = new McpConnectionManager(loaded.config, { manageProcessExit: false });
+
+    // ensure() creates the server state; fetch* otherwise treats an unknown
+    // server as "no tools" without ever connecting.
+    await manager.ensure("empty");
+
+    expect(await fetchToolsForClient(manager, "empty")).toEqual([]);
+    expect(await fetchToolsForClient(manager, "empty")).toEqual([]);
+    expect(await fetchResourcesForClient(manager, "empty")).toEqual([]);
+    expect(await fetchResourcesForClient(manager, "empty")).toEqual([]);
+
+    // stderr markers arrive asynchronously; poll until they flush, then assert
+    // exactly one listTools + one listResources round-trip despite 4 calls.
+    const stderr = await waitForStderrMarker(manager, "empty", "LT");
+    expect(stderr.split("LT").length - 1).toBe(1);
+    expect(stderr.split("LR").length - 1).toBe(1);
+  });
 });
+
+async function waitForStderrMarker(manager: McpConnectionManager, server: string, marker: string): Promise<string> {
+  const deadline = Date.now() + 5_000;
+  for (;;) {
+    const stderr = manager.getState(server)?.stderrTail ?? "";
+    if (stderr.includes(marker)) {
+      // Give any duplicate markers a moment to arrive before asserting the count.
+      await Bun.sleep(100);
+      return manager.getState(server)?.stderrTail ?? "";
+    }
+    if (Date.now() > deadline) return stderr;
+    await Bun.sleep(20);
+  }
+}
 
 describe("MCP e2e (http, integration)", () => {
   let proc: ReturnType<typeof Bun.spawn> | null = null;
@@ -88,9 +147,9 @@ describe("MCP e2e (http, integration)", () => {
     proc = null;
   });
 
-  async function startHttpFixture(): Promise<string> {
-    const fixture = join(import.meta.dir, "fixtures", "http-server.ts");
-    proc = Bun.spawn([process.execPath, fixture], { stdout: "pipe", stderr: "pipe" });
+  async function startHttpFixture(fixtureName = "http-server.ts", extraEnv: Record<string, string> = {}): Promise<string> {
+    const fixture = join(import.meta.dir, "fixtures", fixtureName);
+    proc = Bun.spawn([process.execPath, fixture], { stdout: "pipe", stderr: "pipe", env: { ...process.env, ...extraEnv } });
 
     const stdout = proc.stdout as ReadableStream<Uint8Array>;
     const reader = stdout.getReader();
@@ -124,5 +183,32 @@ describe("MCP e2e (http, integration)", () => {
     expect(await echoTool!.invoke({ text: "hi" })).toBe("http echo: hi");
 
     expect(manager.getState("http_echo")?.status).toBe("connected");
+  }, { timeout: 30_000 });
+
+  test("classifies HTTP 401 as needs-auth", async () => {
+    const url = await startHttpFixture("http-status-server.ts", { HTTP_STATUS: "401" });
+    manager = new McpConnectionManager(
+      { mcpServers: { auth: { type: "http", url, headers: {} } } },
+      { connectTimeoutMs: 15_000, manageProcessExit: false },
+    );
+
+    await expect(manager.ensure("auth")).rejects.toThrow();
+    const state = manager.getState("auth");
+    expect(state?.status).toBe("needs-auth");
+    expect(state?.errorMessage).toContain("401");
+  }, { timeout: 30_000 });
+
+  test("classifies HTTP 404 with an actionable message", async () => {
+    const url = await startHttpFixture("http-status-server.ts", { HTTP_STATUS: "404" });
+    manager = new McpConnectionManager(
+      { mcpServers: { missing: { type: "http", url, headers: {} } } },
+      { connectTimeoutMs: 15_000, manageProcessExit: false },
+    );
+
+    await expect(manager.ensure("missing")).rejects.toThrow();
+    const state = manager.getState("missing");
+    expect(state?.status).toBe("error");
+    expect(state?.errorMessage).toContain("404");
+    expect(state?.errorMessage).toContain("/mcp");
   }, { timeout: 30_000 });
 });

@@ -45,17 +45,17 @@ Claude Code 的 MCP 实现（`reference_mcp.md`）可归纳为一条主线：
 
 ### 1.2 本方案裁剪/保留对照
 
-| 参考章节 | 本期（mini） | 说明 |
-|---|---|---|
-| 2 配置体系（7 种 scope、企业策略、插件） | 只做项目级 `.mcp.json` 单文件 | 多 scope / 启用禁用 / 插件留扩展点 |
-| 3 连接生命周期（7 种传输） | stdio + Streamable HTTP | SSE/WS/IDE/SDK/进程内留扩展点 |
-| 4.1 tools 发现 | 保留 | 命名、截断、inputSchema 透传 |
-| 4.2 resources 发现 | 保留 | 两个内置工具 |
-| 4.3 prompts → 斜杠命令 | 不做 | 需动 TUI 命令体系，扩展点 |
-| 5 调用链路与结果处理 | 保留（不落盘） | 归一化 + 截断；落盘留扩展点 |
-| 6 认证（OAuth / XAA） | 不做 | HTTP 静态 `headers` 可带 Bearer；401 置 `needs-auth` 提示 |
-| 7 UI 与 `/mcp` 命令 | 只做 CLI `helixent mcp list` | TUI 管理面板扩展点 |
-| 9 `claude mcp serve` | 不做 | 明确不在本期 |
+| 参考章节                                 | 本期（mini）                   | 说明                                                         |
+| ---------------------------------------- | ------------------------------ | ------------------------------------------------------------ |
+| 2 配置体系（7 种 scope、企业策略、插件） | 只做项目级`.mcp.json` 单文件 | 多 scope / 启用禁用 / 插件留扩展点                           |
+| 3 连接生命周期（7 种传输）               | stdio + Streamable HTTP        | SSE/WS/IDE/SDK/进程内留扩展点                                |
+| 4.1 tools 发现                           | 保留                           | 命名、截断、inputSchema 透传                                 |
+| 4.2 resources 发现                       | 保留                           | 两个内置工具                                                 |
+| 4.3 prompts → 斜杠命令                  | 不做                           | 需动 TUI 命令体系，扩展点                                    |
+| 5 调用链路与结果处理                     | 保留（不落盘）                 | 归一化 + 截断；落盘留扩展点                                  |
+| 6 认证（OAuth / XAA）                    | 不做                           | HTTP 静态`headers` 可带 Bearer；401 置 `needs-auth` 提示 |
+| 7 UI 与`/mcp` 命令                     | 只做 CLI`helixent mcp list`  | TUI 管理面板扩展点                                           |
+| 9`claude mcp serve`                    | 不做                           | 明确不在本期                                                 |
 
 ---
 
@@ -105,6 +105,7 @@ src/community/mcp/
 ├── names.ts               # normalizeNameForMCP / mcpInfoFromString
 └── __tests__/             # 见 §10
 ```
+
 ---
 
 ## 3. 配置体系
@@ -159,10 +160,10 @@ export const mcpConfigSchema = z.object({
 
 ### 4.1 传输选择
 
-| 类型 | SDK 类 | 细节 |
-|---|---|---|
-| `stdio`（缺省） | `StdioClientTransport` | `command`/`args` 直接 spawn（不经 shell，天然防注入）；`env: { ...process.env, ...cfg.env }`；`stderr: "pipe"` 收集到**环形缓冲（默认 64KB）**，不打印到 UI，仅失败诊断用 |
-| `http` | `StreamableHTTPClientTransport` | `new URL(cfg.url)` + `requestInit.headers = cfg.headers`（可带 `Authorization: Bearer ...` 静态头）；**懒加载 import**（见 §8.1） |
+| 类型              | SDK 类                            | 细节                                                                                                                                                                                    |
+| ----------------- | --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `stdio`（缺省） | `StdioClientTransport`          | `command`/`args` 直接 spawn（不经 shell，天然防注入）；`env: { ...process.env, ...cfg.env }`；`stderr: "pipe"` 收集到**环形缓冲（默认 64KB）**，不打印到 UI，仅失败诊断用 |
+| `http`          | `StreamableHTTPClientTransport` | `new URL(cfg.url)` + `requestInit.headers = cfg.headers`（可带 `Authorization: Bearer ...` 静态头）；**懒加载 import**（见 §8.1）                                          |
 
 SDK 版本建议 `^1.25.0`（2025-11-25 协议版本，Bun 兼容性已稳定）。
 
@@ -170,7 +171,7 @@ SDK 版本建议 `^1.25.0`（2025-11-25 协议版本，Bun 兼容性已稳定）
 
 - `McpConnectionManager` 持有 `Map<serverName, ServerHandle>`，key = `name + JSON.stringify(config)`。
 - `ensure(serverName)`：命中直接返回；未命中则连接并缓存；`onclose` / `list_changed` 通知 / 显式 `invalidate()` 时删除缓存，下次调用重建。
-- 本期不做断线自动重连（调用时按需重建即隐式重连），作为扩展点。
+- 调用级断线重试：工具调用时若连接已断开（transport closed / server 重启 / 网络抖动），会失效缓存、重建连接并**重试一次**；仍失败才报错。后台自动重连不做（扩展点）。
 
 ### 4.3 状态机
 
@@ -185,13 +186,14 @@ connecting → connected → closed
 ### 4.4 超时与错误分类
 
 - 连接超时：`Promise.race([connect, timeout])`，默认 **15s**（`HELIXENT_MCP_CONNECT_TIMEOUT_MS` 可调），超时关闭 transport/进程。
-- 工具调用超时：默认不限制（与 Claude Code 一致，MCP 长任务常见）；`HELIXENT_MCP_TOOL_TIMEOUT_MS` 可调。
-- 错误分类：spawn 失败（`ENOENT`/`EACCES`）、连接失败、HTTP 401（置 `needs-auth` 提示"该 server 需要认证，本期仅支持静态 headers"）、协议错误（JSON-RPC code）→ 统一写进 `errorMessage`。
+- 工具调用超时：默认不限制（与 Claude Code 一致，MCP 长任务常见）；`HELIXENT_MCP_TOOL_TIMEOUT_MS` 可调；超时后会**中止 SDK 调用**（HTTP 可真正取消 fetch；stdio 只能丢弃迟到结果）。
+- 错误分类：spawn 失败（`ENOENT`/`EACCES`）、连接失败、HTTP 401（置 `needs-auth` 提示"该 server 需要认证，本期仅支持静态 headers"）、HTTP 403/404/405/429/5xx（细分可操作提示，如 404 提示检查 `url` 路径）、协议错误（JSON-RPC code）→ 统一写进 `errorMessage`。
 
 ### 4.5 关闭
 
 - `closeAll()`：遍历关闭 transport（stdio 会终止子进程）。
 - 挂 `process.on("exit")` / `SIGINT` / `SIGTERM`，避免 stdio 子进程孤儿（Bun 下 `process.on` 可用，`bun build --compile` 产物同样生效）。
+
 ---
 
 ## 5. 工具与资源发现
@@ -257,10 +259,10 @@ const schema = tool.inputSchema ?? (tool.parameters.toJSONSchema() as ...);
 
 - 连接后调 `client.listResources()`；有结果且 server 声明了 resources 能力时，给 agent 追加两个内置工具（只加一次）：
 
-| 工具名 | 参数 | 行为 |
-|---|---|---|
-| `list_mcp_resources` | `server?`（可选过滤） | 返回各 server 的 `uri / name / mimeType / description` |
-| `read_mcp_resource` | `server`, `uri` | `client.readResource({ uri })`；text 直接返回，**blob（base64）本期不落盘**，返回 `[binary resource <uri> omitted]` 提示（落盘写文件留扩展点） |
+| 工具名                 | 参数                    | 行为                                                                                                                                                     |
+| ---------------------- | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `list_mcp_resources` | `server?`（可选过滤） | 返回各 server 的`uri / name / mimeType / description`                                                                                                  |
+| `read_mcp_resource`  | `server`, `uri`     | `client.readResource({ uri })`；text 直接返回，**blob（base64）本期不落盘**，返回 `[binary resource <uri> omitted]` 提示（落盘写文件留扩展点） |
 
 - resources 同样按 server 缓存，`onclose` / `notifications/resources/list_changed` 失效。
 - 不声明 `roots` 能力（避免 server 反向请求工作区根）；作为扩展点，后续可声明 `roots: { cwd }`。
@@ -279,17 +281,18 @@ Tool.invoke(input, signal)
 ```
 
 - `signal`：agent 的 AbortSignal 透传。HTTP 下 SDK 可取消 fetch；stdio 下无法真正取消已发出的请求，只能丢弃迟到结果（记录一条 debug 日志）。
+- 断线重试：调用时发现连接已断开（transport closed），`callMcpToolWithRetry` 会失效缓存、重建连接并重试一次；只有传输级"连接关闭"错误才重试，server 端工具错误 / `isError` 结果绝不重试（避免副作用重复）。
 - 调用异常：协议错误（含 JSON-RPC code）、连接断开、超时 → 包装成 `Error` 抛出；agent 循环已有兜底（catch 后转 `Error: <msg>` 回写）。
 
 ### 6.2 结果归一化（normalizeMcpResult）
 
 按返回结构分三类：
 
-| 结构 | 处理 |
-|---|---|
-| `isError: true` | 取 content 文本拼接，返回 `Error: <text>`（可被现有 `normalizeToolResult` 识别为失败） |
-| `structuredContent` | `JSON.stringify(structuredContent, null, 2)` |
-| `content[]` | 逐块转换后 `\n` 拼接：`text` → 原文；`resource(text)` → `[Resource from <server> at <uri>] <text>`；`resource_link` → 链接文本；`image`/`audio` → `[<type> from <server> omitted]`；`resource(blob)` → `[binary resource <uri> omitted]` |
+| 结构                  | 处理                                                                                                                                                                                                                                                             |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `isError: true`     | 取 content 文本拼接，返回`Error: <text>`（可被现有 `normalizeToolResult` 识别为失败）                                                                                                                                                                        |
+| `structuredContent` | `JSON.stringify(structuredContent, null, 2)`                                                                                                                                                                                                                   |
+| `content[]`         | 逐块转换后`\n` 拼接：`text` → 原文；`resource(text)` → `[Resource from <server> at <uri>] <text>`；`resource_link` → 链接文本；`image`/`audio` → `[<type> from <server> omitted]`；`resource(blob)` → `[binary resource <uri> omitted]` |
 
 归一化后的字符串直接进入现有工具结果管线：`formatToolResultForMessage` → `ToolMessage`，模型侧无感知，兼容现有 provider 转换。
 
@@ -302,6 +305,7 @@ Tool.invoke(input, signal)
 ### 6.4 与现有结果管线的兼容
 
 - MCP 工具名带 `mcp__` 前缀，不会命中 `getToolResultPolicy` 里 `read_file` 等特殊分支，走默认策略（`maxStringLength: 4000` 用于 summary；工具结果本体由 §6.3 控制）。若需要，可后续按 `mcp__` 前缀加统一策略。
+
 ---
 
 ## 7. CLI 与状态
@@ -386,27 +390,27 @@ src/cli/commands/mcp/__tests__/list.test.ts
 
 修改：
 
-| 文件 | 改动 |
-|---|---|
-| `package.json` | 新增依赖 `@modelcontextprotocol/sdk`（`^1.25.0`） |
-| `src/foundation/tools/function-tool.ts` | 加可选 `inputSchema?: Record<string, unknown>` |
-| `src/community/openai/utils.ts` | `convertToOpenAITools` 优先 `inputSchema` |
-| `src/community/anthropic/utils.ts` | `convertToAnthropicTools` 优先 `inputSchema` |
-| `src/coding/agents/lead-agent.ts` | `createCodingAgent` 增加 `extraTools?: Tool[]`，并入 `tools` |
-| `src/cli/index.tsx` | 启动时 `loadMcpConfig` → `createMcpTools` → 注入 `extraTools`；挂 exit 清理 |
-| `src/cli/commands/index.ts` | 注册 `registerMcpCommands` |
+| 文件                                      | 改动                                                                               |
+| ----------------------------------------- | ---------------------------------------------------------------------------------- |
+| `package.json`                          | 新增依赖`@modelcontextprotocol/sdk`（`^1.25.0`）                               |
+| `src/foundation/tools/function-tool.ts` | 加可选`inputSchema?: Record<string, unknown>`                                    |
+| `src/community/openai/utils.ts`         | `convertToOpenAITools` 优先 `inputSchema`                                      |
+| `src/community/anthropic/utils.ts`      | `convertToAnthropicTools` 优先 `inputSchema`                                   |
+| `src/coding/agents/lead-agent.ts`       | `createCodingAgent` 增加 `extraTools?: Tool[]`，并入 `tools`                 |
+| `src/cli/index.tsx`                     | 启动时`loadMcpConfig` → `createMcpTools` → 注入 `extraTools`；挂 exit 清理 |
+| `src/cli/commands/index.ts`             | 注册`registerMcpCommands`                                                        |
 
 ---
 
 ## 10. 测试计划（bun test）
 
-| 文件 | 覆盖 |
-|---|---|
-| `config.test.ts` | `.mcp.json` 向上发现（临时目录）；schema 校验错误；`${VAR}`/`${VAR:-default}` 展开；Windows npx 提示；UTF-8 BOM |
-| `names.test.ts` | `normalizeNameForMCP`；`mcpInfoFromString`（含工具名里的 `__`） |
-| `result.test.ts` | `isError` / `structuredContent` / content 数组 / resource / 截断 |
-| `e2e.test.ts` | 用 SDK `Server` + `StdioServerTransport` 写一个 fixture server（如 echo），经 `Bun.spawn` 起子进程，走「连接 → listTools → callTool → 归一化」全链路；HTTP 用本地 `node:http` fixture 起 `StreamableHTTPServerTransport`，标记为集成测试；缺失 stdio 命令 → ENOENT 错误分类 |
-| `src/cli/commands/mcp/__tests__/list.test.ts` | `helixent mcp list` 状态收集：connected server 的工具/资源计数；失败 server 不中断命令 |
+| 文件                                            | 覆盖                                                                                                                                                                                                                                                                                     |
+| ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `config.test.ts`                              | `.mcp.json` 向上发现（临时目录）；schema 校验错误；`${VAR}`/`${VAR:-default}` 展开；Windows npx 提示；UTF-8 BOM                                                                                                                                                                    |
+| `names.test.ts`                               | `normalizeNameForMCP`；`mcpInfoFromString`（含工具名里的 `__`）                                                                                                                                                                                                                    |
+| `result.test.ts`                              | `isError` / `structuredContent` / content 数组 / resource / 截断；工具超时中止 SDK 调用；断线重试一次 / 非连接错误不重试                                                                                                                                                                                                                     |
+| `e2e.test.ts`                                 | 用 SDK`Server` + `StdioServerTransport` 写一个 fixture server（如 echo），经 `Bun.spawn` 起子进程，走「连接 → listTools → callTool → 归一化」全链路；HTTP 用本地 `node:http` fixture 起 `StreamableHTTPServerTransport`，标记为集成测试；缺失 stdio 命令 → ENOENT 错误分类；发现失败降级不崩溃；0 工具/资源不重复查询；HTTP 401 → needs-auth、404 → 可操作提示 |
+| `src/cli/commands/mcp/__tests__/list.test.ts` | `helixent mcp list` 状态收集：connected server 的工具/资源计数；失败 server 不中断命令                                                                                                                                                                                                 |
 
 另在 CI 加 `bun run build:bin` 回归，验证 SDK 打包兼容（§8.1）。
 
@@ -427,21 +431,21 @@ src/cli/commands/mcp/__tests__/list.test.ts
 
 ## 12. 风险与对策
 
-| 风险 | 对策 |
-|---|---|
-| SDK × Bun 打包（`build:bin` 动态 import） | CI 回归 `build:bin`；锁 `^1.25.0`；SSE 模块不 import |
-| HTTP 长连接/SSE fallback 在 Bun 下偶发不稳 | 集成测试覆盖；SDK 1.25+ 已修复主要 SSE 问题（本期实际只用 streamable HTTP） |
-| zod v3/v4 并存混淆 | 只在 `community/mcp` 内部接触 SDK 类型；`FunctionTool` 侧只用 `inputSchema: Record<string, unknown>` 透传 |
-| `inputSchema` 根非 object | converter 防御回退 `parameters.toJSONSchema()` |
-| stdio 子进程孤儿 | exit/SIGINT/SIGTERM 挂 `closeAll()` |
-| 恶意/不可信 server | 文档安全提示；stderr 不外泄；输出截断；`.mcp.json` 纳入 code review |
-| 连接慢拖慢启动 | 并行连接 + 超时 + 失败降级；`helixent mcp list` 可诊断 |
+| 风险                                         | 对策                                                                                                           |
+| -------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| SDK × Bun 打包（`build:bin` 动态 import） | CI 回归`build:bin`；锁 `^1.25.0`；SSE 模块不 import                                                        |
+| HTTP 长连接/SSE fallback 在 Bun 下偶发不稳   | 集成测试覆盖；SDK 1.25+ 已修复主要 SSE 问题（本期实际只用 streamable HTTP）                                    |
+| zod v3/v4 并存混淆                           | 只在`community/mcp` 内部接触 SDK 类型；`FunctionTool` 侧只用 `inputSchema: Record<string, unknown>` 透传 |
+| `inputSchema` 根非 object                  | converter 防御回退`parameters.toJSONSchema()`                                                                |
+| stdio 子进程孤儿                             | exit/SIGINT/SIGTERM 挂`closeAll()`                                                                           |
+| 恶意/不可信 server                           | 文档安全提示；stderr 不外泄；输出截断；`.mcp.json` 纳入 code review                                          |
+| 连接慢拖慢启动                               | 并行连接 + 超时 + 失败降级；`helixent mcp list` 可诊断                                                       |
 
 ---
 
 ## 13. 实现与测试记录（踩坑与解决方案）
 
-> 本节记录按本方案实现并跑通测试（`bun test`，全仓 `bun run check` 271 通过）过程中遇到的几个比较奇怪/典型的问题与对应解决方案，供后续维护参考。
+> 本节记录按本方案实现并跑通测试（`bun test`，全仓 `bun run check` 278 通过）过程中遇到的几个比较奇怪/典型的问题与对应解决方案，供后续维护参考。
 
 ### 13.1 `mcpInfoFromString` 解析规则修正：工具名里的 `__`
 
@@ -471,6 +475,7 @@ src/cli/commands/mcp/__tests__/list.test.ts
 ### 13.5 构建回归
 
 - `bun run build:bin` 通过（1104 modules 打包 + 编译成 `dist/bin/helixent`），验证了 §8.1 的 SDK × Bun 打包兼容：顶层只 import `client/index.js`、`client/stdio.js`，`client/streamableHttp.js` 保持懒加载，
+
 ### 13.6 `helixent mcp list` 工具/资源计数恒为 0（发现逻辑不在 CLI 路径上）
 
 - **现象**：`helixent mcp list` 对已连接的 server 始终显示 `TOOLS 0  RESOURCES 0`，与 §7.1 示例输出（`filesystem  connected  5  0`）不符。
@@ -491,12 +496,43 @@ src/cli/commands/mcp/__tests__/list.test.ts
 - **原因**（两层）：
   1. SDK `StdioClientTransport` 用 `cross-spawn`（`shell: false`）。Bun + Windows 下找不到命令时，实际由 cmd.exe 把错误信息写到 stderr 后退出，client 侧只看到「连接未完成握手即关闭」→ 泛化 `-32000 Connection closed`，ENOENT 没有透传上来。
   2. cmd.exe 的 stderr 是 Windows 控制台代码页（中文系统为 GBK），按 UTF-8 解码成 `�` 乱码。
-  另：`describeMcpError` 里 `cfg.type === "stdio"` 的判断漏掉了「缺省 stdio」（`type` 未显式写时是 `undefined`），导致 ENOENT 消息里命令名显示 `"(unknown)"`。
+     另：`describeMcpError` 里 `cfg.type === "stdio"` 的判断漏掉了「缺省 stdio」（`type` 未显式写时是 `undefined`），导致 ENOENT 消息里命令名显示 `"(unknown)"`。
 - **解决**：
   1. `_createStdioTransport` 建连前用 `Bun.which()` 预检命令（覆盖 PATH + PATHEXT，如 `npx` → `npx.cmd`；绝对路径直接可解析；相对路径带分隔符回退 `access()` 检查），不可解析则抛 `code = "ENOENT"` 的错误 → `describeMcpError` 输出 `Failed to spawn command "...": executable not found.`，跨平台且确定性。
   2. stderr 环形缓冲改用 `decodeStderrChunk()`：先按 UTF-8 解码，若出现 U+FFFD 替换符则回退 `TextDecoder("gbk")` 重解（Bun 运行时支持 GBK；类型上用 `node:util` 的 `TextDecoder`，其构造器接受任意 string label）。
   3. `describeMcpError` 的 ENOENT 分支改为 `"command" in cfg` 判断，缺省 stdio 也能拿到真实命令名。
 - **测试**：`e2e.test.ts` 新增「missing command → ENOENT」用例（`manager.ensure` 抛错、state 为 `error`、`errorMessage` 含 `executable not found`）。
+
+
+### 13.9 发现阶段无失败兜底，可能让启动崩掉（A 类）
+
+- **现象**：`createMcpTools()` 里连接用了 `Promise.allSettled`（连接失败可降级），但紧随其后的 `fetchToolsForClient()` / `fetchResourcesForClient()` 没有 try/catch；`src/cli/index.tsx` 的 `await createMcpTools(...)` 也没有兜底。一个 server 连上了但 `listTools` 报错，整个 CLI 启动会抛异常，与「失败降级不阻塞」的承诺不符。
+- **解决**：`createMcpTools` 对每个 server 的发现包 try/catch，失败时把该 server 状态标为 `error` 并继续（工具不注入，状态供 `helixent mcp list` 诊断）。
+- **测试**：`e2e.test.ts` 新增 `failing-discovery-server.ts` fixture（连接成功但 listTools 抛错），断言 `createMcpTools` 不抛、返回空、状态为 error。
+
+### 13.10 工具/资源「空结果不缓存」（A 类）
+
+- **现象**：`fetchToolsForClient` / `fetchResourcesForClient` 用 `state.tools.length > 0` 判断是否已抓取；声明了 tools 能力但返回 0 个工具的 server，每次调用都会重复 `listTools()`。
+- **解决**：给 `McpServerState` 增加 `toolsFetched` / `resourcesFetched` 标志位（「无此能力」「抓取为空」都置位），`invalidate()` 时复位。
+- **测试**：`e2e.test.ts` 新增 `empty-server.ts` fixture（0 工具/资源，每次 listTools 向 stderr 打 `LT` 标记），断言 4 次抓取只发生 1 次往返。
+
+### 13.11 HTTP 错误分类太粗（A 类）
+
+- **现象**：只有 401 → `needs-auth`；403/404/429/5xx 全部归为 `error`，提示也不可操作（404 只显示 `Unable to connect...`）。
+- **解决**：`describeMcpError` 按 `httpStatusOf(error)`（SDK 的 `StreamableHTTPError.code` 就是 HTTP 状态码）细分：401 认证提示、403 凭据被拒、404 检查 `url` 路径（常见 /mcp）、405 端点不接受 MCP 请求、429 限流、5xx server 错误。
+- **测试**：`e2e.test.ts` 新增 `http-status-server.ts` fixture（按 `HTTP_STATUS` 环境变量返回固定状态码），断言 401 → needs-auth、404 → 含 `/mcp` 的可操作提示。
+
+### 13.12 工具超时只「丢弃」不「取消」（A 类）
+
+- **现象**：超时只是 race 拒绝，底层的 `client.callTool` 仍在跑（HTTP 的 fetch 也没取消），连接/资源被占用。
+- **解决**：`callMcpTool` 用自建的 `AbortController`——外层 signal 中断或超时触发时 abort 它并透传给 SDK；同一计时器里先 abort 再以「Timed out」消息 settle，保证报错信息确定、底层调用真正被取消。
+- **测试**：`result.test.ts` 新增「超时后 SDK signal 已 aborted」用例。
+
+### 13.13 断线不重试（A 类）
+
+- **现象**：MCP server 重启 / 网络抖动导致连接断开时，当前调用直接失败；只能等下一次调用靠 memoize 失效重建。
+- **解决**：新增 `callMcpToolWithRetry()`（工具 invoke 入口使用）：调用抛「传输级 connection closed」错误时，失效缓存 → 重建连接 → **重试一次**；server 端工具错误 / `isError` 结果不重试（避免副作用重复）。
+- **测试**：`result.test.ts` 新增「stale 连接重试一次 / 非连接错误不重试」两个用例。
 
 ## 附录：示例 `.mcp.json`
 

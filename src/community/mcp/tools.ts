@@ -9,7 +9,7 @@ import type {
   McpDiscoveredTool,
 } from "./connection-manager";
 import { buildMcpToolName } from "./names";
-import { callMcpTool, normalizeMcpResourceResult } from "./result";
+import { callMcpToolWithRetry, normalizeMcpResourceResult } from "./result";
 
 export const MAX_MCP_DESCRIPTION_LENGTH = 2048;
 
@@ -36,13 +36,20 @@ export async function createMcpTools(manager: McpConnectionManager, options: Cre
   for (const name of names) {
     const state = manager.getState(name);
     if (!state || state.status !== "connected") continue;
-    const discoveredTools = await fetchToolsForClient(manager, name);
-    for (const tool of discoveredTools) {
-      tools.push(toFunctionTool(manager, name, tool, maxDescription));
-    }
-    const resources = await fetchResourcesForClient(manager, name);
-    if (resources.length > 0) {
-      resourceServers.push(name);
+    // Discovery failures degrade gracefully (like connect failures): mark the
+    // server as errored and keep going instead of failing the whole startup.
+    try {
+      const discoveredTools = await fetchToolsForClient(manager, name);
+      for (const tool of discoveredTools) {
+        tools.push(toFunctionTool(manager, name, tool, maxDescription));
+      }
+      const resources = await fetchResourcesForClient(manager, name);
+      if (resources.length > 0) {
+        resourceServers.push(name);
+      }
+    } catch (error) {
+      state.status = "error";
+      state.errorMessage = error instanceof Error ? error.message : String(error);
     }
   }
 
@@ -59,14 +66,20 @@ export async function createMcpTools(manager: McpConnectionManager, options: Cre
 export async function fetchToolsForClient(manager: McpConnectionManager, server: string): Promise<McpDiscoveredTool[]> {
   const state = manager.getState(server);
   if (!state) return [];
-  if (state.tools.length > 0) return state.tools;
+  // Cache by a "fetched" flag, not by length: a server that declares the tools
+  // capability but exposes zero tools must not be re-queried on every call.
+  if (state.toolsFetched) return state.tools;
 
   const handle = await manager.ensure(server);
   const capabilities = handle.client.getServerCapabilities();
-  if (!capabilities?.tools) return [];
+  if (!capabilities?.tools) {
+    state.toolsFetched = true;
+    return [];
+  }
 
   const result = await handle.client.listTools();
   state.tools = result.tools.map(toDiscoveredTool);
+  state.toolsFetched = true;
   return state.tools;
 }
 
@@ -78,11 +91,14 @@ export async function fetchToolsForClient(manager: McpConnectionManager, server:
 export async function fetchResourcesForClient(manager: McpConnectionManager, server: string): Promise<McpDiscoveredResource[]> {
   const state = manager.getState(server);
   if (!state) return [];
-  if (state.resources.length > 0) return state.resources;
+  if (state.resourcesFetched) return state.resources;
 
   const handle = await manager.ensure(server);
   const capabilities = handle.client.getServerCapabilities();
-  if (!capabilities?.resources) return [];
+  if (!capabilities?.resources) {
+    state.resourcesFetched = true;
+    return [];
+  }
 
   const result = await handle.client.listResources();
   state.resources = result.resources.map((resource) => ({
@@ -91,6 +107,7 @@ export async function fetchResourcesForClient(manager: McpConnectionManager, ser
     ...(resource.description !== undefined ? { description: resource.description } : {}),
     ...(resource.mimeType !== undefined ? { mimeType: resource.mimeType } : {}),
   }));
+  state.resourcesFetched = true;
   return state.resources;
 }
 
@@ -103,8 +120,7 @@ function toFunctionTool(manager: McpConnectionManager, server: string, tool: Mcp
     parameters: z.record(z.string(), z.unknown()),
     inputSchema: tool.inputSchema,
     invoke: async (input, signal) => {
-      const handle = await manager.ensure(server);
-      return callMcpTool(handle, tool.name, input, signal);
+      return callMcpToolWithRetry(manager, server, tool.name, input, signal);
     },
   });
 }

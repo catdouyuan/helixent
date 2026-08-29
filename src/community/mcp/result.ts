@@ -2,7 +2,7 @@ import type { CallToolResult, ReadResourceResult } from "@modelcontextprotocol/s
 
 import { truncateText } from "@/foundation";
 
-import type { ServerHandle } from "./connection-manager";
+import type { McpConnectionManager, ServerHandle } from "./connection-manager";
 import { envInt } from "./env";
 
 /** Default maximum characters for a normalized MCP tool result. */
@@ -10,6 +10,9 @@ export const MAX_MCP_OUTPUT_CHARS = envInt("HELIXENT_MCP_MAX_OUTPUT_CHARS", 24_0
 
 /**
  * Calls an MCP tool and normalizes the result to a single string.
+ * The SDK call is aborted when the outer signal aborts or the per-call timeout
+ * fires (HTTP requests are cancelled for real; stdio requests can only be
+ * discarded client-side since the request is already in flight).
  * @param handle - The connected server handle.
  * @param toolName - The MCP tool name (unprefixed).
  * @param input - The tool arguments.
@@ -17,16 +20,77 @@ export const MAX_MCP_OUTPUT_CHARS = envInt("HELIXENT_MCP_MAX_OUTPUT_CHARS", 24_0
  * @returns The normalized tool result text.
  */
 export async function callMcpTool(handle: ServerHandle, toolName: string, input: unknown, signal?: AbortSignal): Promise<string> {
+  const timeoutMs = handle.toolTimeoutMs ?? 0;
+  const timeoutMessage = `Timed out calling MCP tool "${toolName}" on server "${handle.name}"`;
+
+  // A controller we control: abort it when the outer signal aborts OR when the
+  // tool timeout fires, so the SDK call is actually cancelled (not just timed out).
+  const controller = new AbortController();
+  const onOuterAbort = () => controller.abort();
+  if (signal) {
+    if (signal.aborted) {
+      controller.abort();
+    } else {
+      signal.addEventListener("abort", onOuterAbort, { once: true });
+    }
+  }
+
   const call = handle.client.callTool(
     { name: toolName, arguments: (input ?? {}) as Record<string, unknown> },
     undefined,
-    { signal },
+    { signal: controller.signal },
   );
-  const raw =
-    handle.toolTimeoutMs !== undefined && handle.toolTimeoutMs > 0
-      ? await withTimeout(call, handle.toolTimeoutMs, `Timed out calling MCP tool "${toolName}" on server "${handle.name}"`)
-      : await call;
-  return normalizeMcpResult(toCallToolResult(raw), handle.name);
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  // When the timeout fires, abort the SDK call AND settle with our message in
+  // the same tick (so callers get a deterministic "Timed out" even if the
+  // transport ignores the abort signal, e.g. stdio edge cases).
+  const pending =
+    timeoutMs > 0
+      ? Promise.race([
+          call,
+          new Promise<never>((_resolve, reject) => {
+            timer = setTimeout(() => {
+              const error = new Error(timeoutMessage);
+              controller.abort(error);
+              reject(error);
+            }, timeoutMs);
+          }),
+        ])
+      : call;
+
+  try {
+    const raw = await pending;
+    return normalizeMcpResult(toCallToolResult(raw), handle.name);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    signal?.removeEventListener("abort", onOuterAbort);
+  }
+}
+
+/**
+ * Calls an MCP tool with a single retry when the connection turned stale
+ * mid-call (server restarted / network dropped). Only transport-level
+ * "connection closed" errors trigger the retry: the cached handle is invalidated,
+ * the connection is rebuilt, and the tool is called once more. Server-side tool
+ * errors and `isError` results are never retried. A second failure is thrown as-is.
+ */
+export async function callMcpToolWithRetry(
+  manager: McpConnectionManager,
+  server: string,
+  toolName: string,
+  input: unknown,
+  signal?: AbortSignal,
+): Promise<string> {
+  let handle = await manager.ensure(server);
+  try {
+    return await callMcpTool(handle, toolName, input, signal);
+  } catch (error) {
+    if (!isConnectionClosedError(error)) throw error;
+    manager.invalidate(server);
+    handle = await manager.ensure(server);
+    return callMcpTool(handle, toolName, input, signal);
+  }
 }
 
 /**
@@ -114,18 +178,14 @@ function truncateMcpText(text: string, maxChars: number): string {
   return `${limited.text}\n[OUTPUT TRUNCATED]`;
 }
 
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
-  return new Promise<T>((resolvePromise, rejectPromise) => {
-    const timer = setTimeout(() => rejectPromise(new Error(message)), timeoutMs);
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolvePromise(value);
-      },
-      (error) => {
-        clearTimeout(timer);
-        rejectPromise(error);
-      },
-    );
-  });
+/**
+ * Detects transport-level "connection closed" failures (stale handle, server
+ * restart, network drop). These are the only errors eligible for a one-shot retry.
+ */
+function isConnectionClosedError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const e = error as { code?: unknown; message?: unknown };
+  if (e.code === -32000) return true;
+  const message = typeof e.message === "string" ? e.message : "";
+  return /connection closed|connection lost|transport closed|not connected/i.test(message);
 }

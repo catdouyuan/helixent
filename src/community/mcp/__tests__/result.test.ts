@@ -2,8 +2,8 @@
 import type { CallToolResult, ReadResourceResult } from "@modelcontextprotocol/sdk/types.js";
 import { describe, expect, test } from "bun:test";
 
-import type { ServerHandle } from "../connection-manager";
-import { callMcpTool, normalizeMcpResourceResult, normalizeMcpResult } from "../result";
+import type { McpConnectionManager, ServerHandle } from "../connection-manager";
+import { callMcpTool, callMcpToolWithRetry, normalizeMcpResourceResult, normalizeMcpResult } from "../result";
 
 function resultOf(partial: Partial<CallToolResult>): CallToolResult {
   return { content: [], ...partial };
@@ -105,6 +105,68 @@ describe("callMcpTool", () => {
       50,
     );
     await expect(callMcpTool(handle, "echo", {})).rejects.toThrow("Timed out");
+  });
+
+  test("aborts the SDK call when the tool timeout fires", async () => {
+    let capturedSignal: AbortSignal | undefined;
+    const handle = fakeHandle(
+      {
+        callTool: async (_req, _schema, options) => {
+          capturedSignal = options?.signal;
+          await new Promise<never>((_resolve, reject) => {
+            capturedSignal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+          });
+          throw new Error("unreachable");
+        },
+      },
+      50,
+    );
+    await expect(callMcpTool(handle, "echo", {})).rejects.toThrow("Timed out");
+    expect(capturedSignal?.aborted).toBe(true);
+  });
+});
+
+describe("callMcpToolWithRetry", () => {
+  test("retries once after a stale connection", async () => {
+    let ensureCount = 0;
+    let invalidated = false;
+    const staleHandle = fakeHandle({
+      callTool: async () => {
+        throw Object.assign(new Error("MCP error -32000: Connection closed"), { code: -32000 });
+      },
+    });
+    const freshHandle = fakeHandle({
+      callTool: async () => ({ content: [{ type: "text", text: "ok" }] }),
+    });
+    const manager = {
+      ensure: async () => (ensureCount++ === 0 ? staleHandle : freshHandle),
+      invalidate: () => {
+        invalidated = true;
+      },
+    };
+
+    expect(await callMcpToolWithRetry(manager as unknown as McpConnectionManager, "echo", "echo", {})).toBe("ok");
+    expect(ensureCount).toBe(2);
+    expect(invalidated).toBe(true);
+  });
+
+  test("does not retry on non-connection errors", async () => {
+    let ensureCount = 0;
+    const handle = fakeHandle({
+      callTool: async () => {
+        throw new Error("boom");
+      },
+    });
+    const manager = {
+      ensure: async () => {
+        ensureCount++;
+        return handle;
+      },
+      invalidate: () => {},
+    };
+
+    await expect(callMcpToolWithRetry(manager as unknown as McpConnectionManager, "echo", "echo", {})).rejects.toThrow("boom");
+    expect(ensureCount).toBe(1);
   });
 });
 
