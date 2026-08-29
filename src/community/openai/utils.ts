@@ -96,12 +96,22 @@ export function parseAssistantMessage(message: OpenAIChatCompletionMessage, usag
 
 /**
  * Converts the tools to OpenAI ChatCompletionTool messages.
+ * Prefers the raw `inputSchema` when present (MCP passthrough), falling back to
+ * `parameters.toJSONSchema()` otherwise.
  * @param tools - The tools to convert.
  * @returns The OpenAI ChatCompletionTool messages.
  */
 export function convertToOpenAITools(tools: Tool[]): ChatCompletionTool[] {
   return tools.map((tool) => ({
     type: "function",
-    function: { name: tool.name, description: tool.description, parameters: tool.parameters.toJSONSchema() },
+    function: { name: tool.name, description: tool.description, parameters: toolInputSchema(tool) },
   }));
+}
+
+function toolInputSchema(tool: Tool): Record<string, unknown> {
+  const inputSchema = tool.inputSchema;
+  if (inputSchema && typeof inputSchema === "object" && inputSchema.type === "object") {
+    return inputSchema;
+  }
+  return tool.parameters.toJSONSchema() as unknown as Record<string, unknown>;
 }

@@ -1,6 +1,8 @@
 import { stat } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 
+export { truncateText } from "@/foundation";
+
 export function ensureAbsolutePath(path: string) {
   if (!isAbsolute(path)) {
     return { ok: false as const, error: `Path must be absolute: ${path}` };
@@ -32,14 +34,4 @@ export async function ensureDirectoryPath(path: string) {
 export function isWithinDirectory(root: string, target: string) {
   const relativePath = relative(resolve(root), resolve(target));
   return relativePath === "" || (!relativePath.startsWith("..") && !relativePath.includes(`..${sep}`));
-}
-
-export function truncateText(text: string, maxChars: number) {
-  if (text.length <= maxChars) {
-    return { text, truncated: false };
-  }
-  return {
-    text: `${text.slice(0, maxChars)}\n... [truncated ${text.length - maxChars} chars]`,
-    truncated: true,
-  };
 }

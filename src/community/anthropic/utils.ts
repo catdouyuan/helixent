@@ -153,6 +153,14 @@ export function convertToAnthropicTools(tools: Tool[]): Anthropic.Tool[] {
   return tools.map((tool) => ({
     name: tool.name,
     description: tool.description,
-    input_schema: tool.parameters.toJSONSchema() as Anthropic.Tool["input_schema"],
+    input_schema: toolInputSchema(tool) as Anthropic.Tool["input_schema"],
   }));
+}
+
+function toolInputSchema(tool: Tool): Record<string, unknown> {
+  const inputSchema = tool.inputSchema;
+  if (inputSchema && typeof inputSchema === "object" && inputSchema.type === "object") {
+    return inputSchema;
+  }
+  return tool.parameters.toJSONSchema() as unknown as Record<string, unknown>;
 }

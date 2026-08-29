@@ -15,6 +15,12 @@ export interface FunctionTool<
   description: string;
   /** The parameters of the tool. */
   parameters: P;
+  /**
+   * Optional raw JSON Schema sent directly to providers.
+   * Takes precedence over `parameters.toJSONSchema()` so MCP input schemas
+   * (`$ref`, `anyOf`, `additionalProperties`, ...) pass through losslessly.
+   */
+  inputSchema?: Record<string, unknown>;
   /** The function to invoke when the tool is called. */
   // eslint-disable-next-line no-unused-vars
   invoke: (input: z.infer<P>, signal?: AbortSignal) => Promise<R>;
@@ -25,6 +31,7 @@ export interface FunctionTool<
  * @param name - The name of the tool.
  * @param description - The description of the tool.
  * @param parameters - The parameters of the tool.
+ * @param inputSchema - Optional raw JSON Schema that takes precedence over `parameters.toJSONSchema()`.
  * @param invoke - The function to invoke when the tool is called.
  * @returns The function tool.
  */
@@ -32,13 +39,15 @@ export function defineTool<P extends z.ZodSchema<Record<string, unknown>>, R>({
   name,
   description,
   parameters,
+  inputSchema,
   invoke,
 }: {
   name: string;
   description: string;
   parameters: P;
+  inputSchema?: Record<string, unknown>;
   // eslint-disable-next-line no-unused-vars
   invoke: (input: z.infer<P>, signal?: AbortSignal) => Promise<R>;
 }): FunctionTool<P, R> {
-  return { name, description, parameters, invoke } as FunctionTool<P, R>;
+  return { name, description, parameters, ...(inputSchema ? { inputSchema } : {}), invoke } as FunctionTool<P, R>;
 }

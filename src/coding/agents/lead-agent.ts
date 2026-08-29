@@ -3,7 +3,7 @@ import { join } from "path";
 import { Agent } from "@/agent";
 import { createSkillsMiddleware } from "@/agent/skills/skills-middleware";
 import { createTodoSystem } from "@/agent/todos/todos";
-import type { Model, NonSystemMessage, ToolUseContent } from "@/foundation";
+import type { Model, NonSystemMessage, Tool, ToolUseContent } from "@/foundation";
 
 import {
   type ApprovalDecision,
@@ -32,6 +32,7 @@ export async function createCodingAgent({
   model,
   cwd = process.cwd(),
   skillsDirs = [join(process.cwd(), ".agents/skills")],
+  extraTools = [],
   askUser,
   askUserQuestion,
   approvalPersistence,
@@ -39,6 +40,7 @@ export async function createCodingAgent({
   model: Model;
   cwd?: string;
   skillsDirs?: string[];
+  extraTools?: Tool[];
   // eslint-disable-next-line no-unused-vars
   askUser?: (toolUse: ToolUseContent) => Promise<ApprovalDecision>;
   // eslint-disable-next-line no-unused-vars
@@ -129,6 +131,7 @@ The bash tool executes commands using the configured platform shell.
       applyPatchTool,
       todoTool,
       ...(askUserQuestionTool ? [askUserQuestionTool] : []),
+      ...extraTools,
     ],
     middlewares,
   });

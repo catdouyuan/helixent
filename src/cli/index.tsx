@@ -9,8 +9,9 @@ import { loadConfig } from "@/cli/config";
 import { SettingsLoader, SettingsWriter } from "@/cli/settings";
 import { createCodingAgent, globalApprovalManager, globalAskUserQuestionManager } from "@/coding";
 import { AnthropicModelProvider } from "@/community/anthropic";
+import { createMcpTools, loadMcpConfig, McpConnectionManager } from "@/community/mcp";
 import { OpenAIModelProvider } from "@/community/openai";
-import type { ModelProvider } from "@/foundation";
+import type { ModelProvider, Tool } from "@/foundation";
 import { Model } from "@/foundation";
 
 import { App } from "./tui";
@@ -69,11 +70,34 @@ if (args.length > 0) {
     "~/.helixent/skills",
   ];
 
+  const mcpConfigResult = await loadMcpConfig({ cwd: process.cwd() });
+  for (const warning of mcpConfigResult.warnings) {
+    console.warn(`[mcp] ${warning.message}`);
+  }
+  for (const error of mcpConfigResult.errors) {
+    console.warn(`[mcp] ${error.message}`);
+  }
+  const mcpManager =
+    Object.keys(mcpConfigResult.config.mcpServers).length > 0
+      ? new McpConnectionManager(mcpConfigResult.config, { errors: mcpConfigResult.errors })
+      : null;
+  const extraTools: Tool[] = mcpManager ? await createMcpTools(mcpManager) : [];
+  const warnedServers = new Set(
+    mcpConfigResult.errors.map((error) => error.serverName).filter((name): name is string => name !== undefined),
+  );
+  for (const state of mcpManager?.listStates() ?? []) {
+    if (warnedServers.has(state.name)) continue;
+    if (state.status === "error" || state.status === "needs-auth") {
+      console.warn(`[mcp] Server "${state.name}" unavailable (${state.status}): ${state.errorMessage ?? "unknown error"}`);
+    }
+  }
+
   const settingsLoader = new SettingsLoader();
   const settingsWriter = new SettingsWriter(settingsLoader);
   const agent = await createCodingAgent({
     model,
     skillsDirs,
+    extraTools,
     askUser: globalApprovalManager.askUser,
     askUserQuestion: globalAskUserQuestionManager.askUserQuestion,
     approvalPersistence: {
